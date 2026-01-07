@@ -1,0 +1,6 @@
+[dotenv@17.2.3] injecting env (7) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+[dotenv@17.2.3] injecting env (0) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+Server running on port 3000
+Login attempt for email: waikeat@company.com
+User found: Yes
+Password valid: true
