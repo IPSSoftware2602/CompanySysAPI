@@ -4,8 +4,8 @@ const path = require('path');
 const migrations = [
     'migrate_kanban.js',
     'migrate_gatekeeping.js',
-    'migrate_supporting_projects.js',
     'migrate_support_schema.js',
+    'migrate_supporting_projects.js',
     'migrate_support_dates.js',
     'migrate_ticket_dates.js',
     'migrate_ticket_position.js',
