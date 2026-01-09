@@ -41,6 +41,25 @@ async function seedData() {
                     [result.rows[0].id, list.name, i, list.status]
                 );
             }
+
+            // Create default labels
+            const defaultLabels = [
+                { name: 'Bug', color: '#eb5a46' },          // Red
+                { name: 'Feature', color: '#61bd4f' },      // Green
+                { name: 'Enhancement', color: '#f2d600' },  // Yellow
+                { name: 'Documentation', color: '#0079bf' },// Blue
+                { name: 'Priority', color: '#ff9f1a' },     // Orange
+                { name: 'Review', color: '#c377e0' },       // Purple
+                { name: 'Testing', color: '#00c2e0' },      // Cyan
+                { name: 'Design', color: '#ff78cb' },       // Pink
+            ];
+
+            for (const label of defaultLabels) {
+                await pool.query(
+                    'INSERT INTO labels (name, color, project_id) VALUES ($1, $2, $3)',
+                    [label.name, label.color, result.rows[0].id]
+                );
+            }
         }
 
         // Get user IDs
@@ -70,11 +89,31 @@ async function seedData() {
                 const status = ticketStatuses[Math.floor(Math.random() * ticketStatuses.length)];
                 const assignedTo = Math.random() > 0.3 ? (Math.random() > 0.5 ? dev.id : techLead.id) : null;
 
-                await pool.query(
+                const ticketResult = await pool.query(
                     `INSERT INTO tickets (title, description, type, status, project_id, assigned_to_user_id)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
                     [template.title, template.description, template.type, status, projectId, assignedTo]
                 );
+                const ticketId = ticketResult.rows[0].id;
+
+                // Assign random labels
+                if (Math.random() > 0.3) {
+                    const projectLabelsRes = await pool.query('SELECT id FROM labels WHERE project_id = $1', [projectId]);
+                    const projectLabels = projectLabelsRes.rows;
+
+                    if (projectLabels.length > 0) {
+                        const numLabels = Math.floor(Math.random() * 2) + 1; // 1-2 labels
+                        const shuffled = projectLabels.sort(() => 0.5 - Math.random());
+                        const selected = shuffled.slice(0, numLabels);
+
+                        for (const label of selected) {
+                            await pool.query(
+                                'INSERT INTO ticket_labels (ticket_id, label_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                                [ticketId, label.id]
+                            );
+                        }
+                    }
+                }
             }
         }
 

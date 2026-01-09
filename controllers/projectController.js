@@ -1,5 +1,6 @@
 const Project = require('../models/projectModel');
 const List = require('../models/listModel');
+const Label = require('../models/labelModel');
 
 exports.createProject = async (req, res) => {
     try {
@@ -22,6 +23,26 @@ exports.createProject = async (req, res) => {
                 name: defaultLists[i].name,
                 position: i,
                 mapped_status: defaultLists[i].status
+            });
+        }
+
+        // Create default labels
+        const defaultLabels = [
+            { name: 'Bug', color: '#eb5a46' },          // Red
+            { name: 'Feature', color: '#61bd4f' },      // Green
+            { name: 'Enhancement', color: '#f2d600' },  // Yellow
+            { name: 'Documentation', color: '#0079bf' },// Blue
+            { name: 'Priority', color: '#ff9f1a' },     // Orange
+            { name: 'Review', color: '#c377e0' },       // Purple
+            { name: 'Testing', color: '#00c2e0' },      // Cyan
+            { name: 'Design', color: '#ff78cb' },       // Pink
+        ];
+
+        for (const label of defaultLabels) {
+            await Label.create({
+                project_id: project.id,
+                name: label.name,
+                color: label.color
             });
         }
 
