@@ -17,21 +17,32 @@ async function migrate() {
             );
         `);
 
-        // Migrate existing data
-        console.log('Migrating existing assignments...');
-        await client.query(`
-            INSERT INTO ticket_checklist_assignments (checklist_id, user_id)
-            SELECT id, assigned_member_id 
-            FROM ticket_checklists 
-            WHERE assigned_member_id IS NOT NULL;
+        // Check if assigned_member_id exists to avoid error on second run
+        const checkCol = await client.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='ticket_checklists' AND column_name='assigned_member_id';
         `);
 
-        // Remove old column
-        console.log('Removing old assigned_member_id column...');
-        await client.query(`
-            ALTER TABLE ticket_checklists 
-            DROP COLUMN IF EXISTS assigned_member_id;
-        `);
+        if (checkCol.rows.length > 0) {
+            // Migrate existing data
+            console.log('Migrating existing assignments...');
+            await client.query(`
+                INSERT INTO ticket_checklist_assignments (checklist_id, user_id)
+                SELECT id, assigned_member_id 
+                FROM ticket_checklists 
+                WHERE assigned_member_id IS NOT NULL;
+            `);
+
+            // Remove old column
+            console.log('Removing old assigned_member_id column...');
+            await client.query(`
+                ALTER TABLE ticket_checklists 
+                DROP COLUMN IF EXISTS assigned_member_id;
+            `);
+        } else {
+            console.log('Column assigned_member_id already removed, skipping data migration.');
+        }
 
         console.log('Successfully implemented multiple member assignments');
 
