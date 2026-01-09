@@ -36,7 +36,26 @@ class Ticket {
     }
 
     static async getByProject(projectId) {
-        const result = await db.query('SELECT * FROM tickets WHERE project_id = $1 ORDER BY list_id, position ASC, created_at DESC', [projectId]);
+        const result = await db.query(`
+            SELECT t.*, 
+                   COALESCE(
+                       (SELECT json_agg(l.*) 
+                        FROM ticket_labels tl 
+                        JOIN labels l ON tl.label_id = l.id 
+                        WHERE tl.ticket_id = t.id), 
+                       '[]'::json
+                   ) as labels,
+                   COALESCE(
+                       (SELECT json_agg(u.full_name)
+                        FROM ticket_assignments ta
+                        JOIN users u ON ta.user_id = u.id
+                        WHERE ta.ticket_id = t.id),
+                        '[]'::json
+                   ) as members_names
+            FROM tickets t 
+            WHERE t.project_id = $1 
+            ORDER BY t.list_id, t.position ASC, t.created_at DESC
+        `, [projectId]);
         return result.rows;
     }
 
