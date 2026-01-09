@@ -15,7 +15,7 @@ class User {
     }
 
     static async getAll() {
-        const result = await db.query('SELECT id, email, role, full_name FROM users WHERE deleted_at IS NULL');
+        const result = await db.query('SELECT id, email, role, full_name FROM users WHERE deleted_at IS NULL ORDER BY full_name ASC');
         return result.rows;
     }
 

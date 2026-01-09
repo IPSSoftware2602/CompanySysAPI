@@ -2,8 +2,9 @@ const db = require('../db');
 
 exports.getAllUsers = async (req, res) => {
     try {
-        const result = await db.query('SELECT id, full_name, email, role FROM users ORDER BY full_name ASC');
-        res.json(result.rows);
+        const User = require('../models/userModel');
+        const users = await User.getAll();
+        res.json(users);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to fetch users' });
