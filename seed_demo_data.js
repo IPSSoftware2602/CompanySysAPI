@@ -21,6 +21,26 @@ async function seedData() {
             );
             projectIds.push(result.rows[0].id);
             console.log(`Created project: ${project.name}`);
+
+            // Create default lists
+            const defaultLists = [
+                { name: 'Backlog', status: 'BACKLOG' },
+                { name: 'Tech Design', status: 'TECH_DESIGN' },
+                { name: 'Ready for Dev', status: 'READY_FOR_DEV' },
+                { name: 'In Progress', status: 'IN_PROGRESS' },
+                { name: 'Code Review', status: 'CODE_REVIEW' },
+                { name: 'QA Testing', status: 'QA' },
+                { name: 'Ready to Deploy', status: 'READY_TO_DEPLOY' },
+                { name: 'Done', status: 'DONE' }
+            ];
+
+            for (let i = 0; i < defaultLists.length; i++) {
+                const list = defaultLists[i];
+                await pool.query(
+                    'INSERT INTO lists (project_id, name, position, mapped_status) VALUES ($1, $2, $3, $4)',
+                    [result.rows[0].id, list.name, i, list.status]
+                );
+            }
         }
 
         // Get user IDs

@@ -14,7 +14,9 @@ const migrations = [
     'migrate_checklist_metadata_refactor.js',
     'migrate_checklist_completion.js',
     'migrate_trello_features.js',
-    'migrate_activity_logs.js'
+    'migrate_activity_logs.js',
+    'migrate_admin_role.js',
+    'migrate_user_soft_delete.js'
 ];
 
 console.log('🚀 Starting full database migration...');

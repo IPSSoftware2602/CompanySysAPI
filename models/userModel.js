@@ -2,7 +2,7 @@ const db = require('../db');
 
 class User {
     static async findByEmail(email) {
-        const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        const result = await db.query('SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL', [email]);
         return result.rows[0];
     }
 
@@ -15,7 +15,7 @@ class User {
     }
 
     static async getAll() {
-        const result = await db.query('SELECT id, email, role, full_name FROM users');
+        const result = await db.query('SELECT id, email, role, full_name FROM users WHERE deleted_at IS NULL');
         return result.rows;
     }
 
@@ -40,7 +40,7 @@ class User {
     }
 
     static async delete(id) {
-        await db.query('DELETE FROM users WHERE id = $1', [id]);
+        await db.query('UPDATE users SET deleted_at = NOW() WHERE id = $1', [id]);
     }
 }
 
