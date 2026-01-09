@@ -16,7 +16,8 @@ const migrations = [
     'migrate_trello_features.js',
     'migrate_activity_logs.js',
     'migrate_admin_role.js',
-    'migrate_user_soft_delete.js'
+    'migrate_user_soft_delete.js',
+    'migrate_project_status.js'
 ];
 
 console.log('🚀 Starting full database migration...');
