@@ -17,7 +17,8 @@ const migrations = [
     'migrate_activity_logs.js',
     'migrate_admin_role.js',
     'migrate_user_soft_delete.js',
-    'migrate_project_status.js'
+    'migrate_project_status.js',
+    'idempotent_migrate_credits.js'
 ];
 
 console.log('🚀 Starting full database migration...');

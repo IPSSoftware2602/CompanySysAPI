@@ -29,6 +29,7 @@ app.use('/api/checklist-templates', require('./routes/checklistTemplateRoutes'))
 app.use('/api/activity-logs', require('./routes/activityLogRoutes'));
 app.use('/api/support-tickets', require('./routes/supportTicketRoutes'));
 app.use('/api/supporting-projects', require('./routes/supportingProjectRoutes'));
+app.use('/api/credits', require('./routes/creditRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/uploads', express.static('uploads'));
 
