@@ -45,9 +45,12 @@ exports.transitionTicket = async (req, res) => {
         if (to_list_id) {
             const db = require('../db');
             const listRes = await db.query('SELECT mapped_status FROM lists WHERE id = $1', [to_list_id]);
+            console.log(`Transition Debug: to_list_id=${to_list_id}, found=${listRes.rows.length}, mapped_status=${listRes.rows[0]?.mapped_status}`);
+
             if (listRes.rows.length > 0) {
                 // If list has a mapped status, use it. Otherwise default to BACKLOG (or keep current? let's default to BACKLOG for safety)
                 target = listRes.rows[0].mapped_status || 'BACKLOG';
+                console.log(`Transition Debug: target resolved to ${target}`);
             }
         }
 
@@ -56,11 +59,14 @@ exports.transitionTicket = async (req, res) => {
         const ChecklistSubmission = require('../models/checklistSubmissionModel');
 
         // Get required templates for the target status
+        console.log(`Transition Debug: Checking templates for target=${target}`);
         const templates = await ChecklistTemplate.getByRequiredStatus(target);
+        console.log(`Transition Debug: Found ${templates.length} templates`);
 
         for (const template of templates) {
             const submission = await ChecklistSubmission.getByTicketAndTemplate(id, template.id);
             if (!submission) {
+                console.log(`Transition Debug: Missing submission for template ${template.name}`);
                 return res.status(403).json({
                     error: `Missing required checklist: ${template.name}`,
                     required_checklist: template.id
@@ -76,18 +82,21 @@ exports.transitionTicket = async (req, res) => {
         const db = require('../db');
         const previousTicket = await db.query('SELECT status FROM tickets WHERE id = $1', [id]);
         const fromStatus = previousTicket.rows[0]?.status;
+        console.log(`Transition Debug: Updating ticket ${id} from ${fromStatus} to ${target}`);
 
         const ticket = await Ticket.update(id, updateData);
+        console.log(`Transition Debug: Ticket updated`, ticket);
 
         // Log transition
+        console.log(`Transition Debug: Logging transition`);
         await db.query(
             'INSERT INTO ticket_transitions (ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
             [id, fromStatus, target, req.user?.id, reason]
         );
         res.json(ticket);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to transition ticket' });
+        console.error('Transition Error Details:', err);
+        res.status(500).json({ error: 'Failed to transition ticket', details: err.message });
     }
 };
 
@@ -190,5 +199,53 @@ exports.searchTickets = async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Search failed' });
+    }
+};
+
+exports.deleteTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log('Delete ticket request for ID:', id);
+
+        // First check if ticket exists
+        const ticketCheck = await db.query('SELECT id FROM tickets WHERE id = $1', [id]);
+        if (ticketCheck.rows.length === 0) {
+            console.log('Ticket not found with ID:', id);
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
+
+        // Delete related records (wrap each in try-catch for tables that may not exist)
+        try { await db.query('DELETE FROM ticket_assignments WHERE ticket_id = $1', [id]); }
+        catch (e) { console.log('Skipping ticket_assignments:', e.message); }
+
+        try { await db.query('DELETE FROM comments WHERE ticket_id = $1', [id]); }
+        catch (e) { console.log('Skipping comments:', e.message); }
+
+        try { await db.query('DELETE FROM checklist_submissions WHERE ticket_id = $1', [id]); }
+        catch (e) { console.log('Skipping checklist_submissions:', e.message); }
+
+        // Delete checklists and their items
+        try {
+            const checklists = await db.query('SELECT id FROM checklists WHERE ticket_id = $1', [id]);
+            for (const checklist of checklists.rows) {
+                await db.query('DELETE FROM checklist_items WHERE checklist_id = $1', [checklist.id]);
+            }
+            await db.query('DELETE FROM checklists WHERE ticket_id = $1', [id]);
+        } catch (e) { console.log('Skipping checklists:', e.message); }
+
+        try { await db.query('DELETE FROM ticket_activity_logs WHERE ticket_id = $1', [id]); }
+        catch (e) { console.log('Skipping ticket_activity_logs:', e.message); }
+
+        try { await db.query('DELETE FROM credit_evaluations WHERE ticket_id = $1', [id]); }
+        catch (e) { console.log('Skipping credit_evaluations:', e.message); }
+
+        // Finally delete the ticket
+        const result = await db.query('DELETE FROM tickets WHERE id = $1 RETURNING *', [id]);
+        console.log('Ticket deleted:', result.rows[0]);
+
+        res.json({ message: 'Ticket deleted successfully', ticket: result.rows[0] });
+    } catch (err) {
+        console.error('Delete ticket error:', err);
+        res.status(500).json({ error: 'Failed to delete ticket', details: err.message });
     }
 };

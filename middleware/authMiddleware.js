@@ -9,7 +9,11 @@ exports.authenticateToken = (req, res, next) => {
     if (!token) return res.sendStatus(401);
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
+        if (err) {
+            console.error('JWT Verification Error:', err.message);
+            return res.sendStatus(403);
+        }
+        console.log('User Authenticated:', user.email, user.role);
         req.user = user;
         next();
     });

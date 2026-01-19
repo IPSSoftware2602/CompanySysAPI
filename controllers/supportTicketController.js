@@ -92,9 +92,13 @@ exports.transitionTicket = async (req, res) => {
     const { id } = req.params;
     const { status, reason, start_date, actual_end_date, priority } = req.body; // Allow updating dates/priority here too?
 
+    console.log('Support Ticket Transition:', { id, status, reason });
+
     try {
         const ticket = await SupportTicket.getById(id);
         if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+        console.log('Current ticket status:', ticket.status, '-> New status:', status);
 
         const updateData = {};
         if (status) updateData.status = status;
@@ -115,20 +119,26 @@ exports.transitionTicket = async (req, res) => {
             updateData.closed_at = new Date().toISOString();
         }
 
+        console.log('Update data:', updateData);
         const updatedTicket = await SupportTicket.update(id, updateData);
+        console.log('Updated ticket:', updatedTicket?.status);
 
-        // Log transition ONLY if status changed
+        // Log transition ONLY if status changed (wrap in try-catch to not fail the main operation)
         if (status && status !== ticket.status) {
-            await db.query(
-                'INSERT INTO support_ticket_transitions (support_ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
-                [id, ticket.status, status, req.user?.id, reason]
-            );
+            try {
+                await db.query(
+                    'INSERT INTO support_ticket_transitions (support_ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
+                    [id, ticket.status, status, req.user?.id, reason]
+                );
+            } catch (logErr) {
+                console.log('Transition log failed (non-critical):', logErr.message);
+            }
         }
 
         res.json(updatedTicket);
 
     } catch (err) {
-        console.error(err);
+        console.error('Transition error:', err);
         res.status(500).json({ error: 'Failed to transition ticket' });
     }
 };
@@ -186,5 +196,27 @@ exports.getBoardTickets = async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to fetch support tickets' });
+    }
+};
+
+exports.deleteSupportTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Delete related records
+        await db.query('DELETE FROM support_ticket_transitions WHERE support_ticket_id = $1', [id]);
+        await db.query('DELETE FROM credit_evaluations WHERE support_ticket_id = $1', [id]);
+
+        // Delete the ticket
+        const result = await db.query('DELETE FROM support_tickets WHERE id = $1 RETURNING *', [id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Support ticket not found' });
+        }
+
+        res.json({ message: 'Support ticket deleted successfully', ticket: result.rows[0] });
+    } catch (err) {
+        console.error('Delete support ticket error:', err);
+        res.status(500).json({ error: 'Failed to delete support ticket' });
     }
 };

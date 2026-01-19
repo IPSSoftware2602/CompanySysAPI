@@ -31,6 +31,7 @@ app.use('/api/support-tickets', require('./routes/supportTicketRoutes'));
 app.use('/api/supporting-projects', require('./routes/supportingProjectRoutes'));
 app.use('/api/credits', require('./routes/creditRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
+app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/uploads', express.static('uploads'));
 
 app.get('/', (req, res) => {

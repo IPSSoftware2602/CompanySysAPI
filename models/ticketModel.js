@@ -46,12 +46,12 @@ class Ticket {
                        '[]'::json
                    ) as labels,
                    COALESCE(
-                       (SELECT json_agg(u.full_name)
+                       (SELECT json_agg(json_build_object('id', u.id, 'full_name', u.full_name))
                         FROM ticket_assignments ta
                         JOIN users u ON ta.user_id = u.id
                         WHERE ta.ticket_id = t.id),
                         '[]'::json
-                   ) as members_names
+                   ) as members
             FROM tickets t 
             WHERE t.project_id = $1 
             ORDER BY t.list_id, t.position ASC, t.created_at DESC

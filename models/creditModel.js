@@ -8,7 +8,7 @@ class CreditModel {
             period_month,
             complexity_score, effectiveness_score, completeness_score,
             sla_response_score, sla_resolve_score, sla_score,
-            error_level,
+            error_level, ticket_mark,
             final_score, final_credit,
             notes, status, source
         } = data;
@@ -20,10 +20,10 @@ class CreditModel {
                 period_month,
                 complexity_score, effectiveness_score, completeness_score,
                 sla_response_score, sla_resolve_score, sla_score,
-                error_level,
+                error_level, ticket_mark,
                 final_score, final_credit,
                 notes, status, source
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             RETURNING *`,
             [
                 ticket_id, support_ticket_id, ticket_type,
@@ -31,7 +31,7 @@ class CreditModel {
                 period_month,
                 complexity_score, effectiveness_score, completeness_score,
                 sla_response_score, sla_resolve_score, sla_score,
-                error_level,
+                error_level, ticket_mark,
                 final_score, final_credit,
                 notes, status, source
             ]
