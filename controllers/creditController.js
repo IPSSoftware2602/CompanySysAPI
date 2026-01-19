@@ -11,7 +11,7 @@ exports.getUserCredits = async (req, res) => {
         const { userId } = req.params;
         const { month } = req.query;
 
-        // 1. Get Kanban Tickets with dates
+        // 1. Get Kanban Tickets with dates - using ticket_assignments junction table
         const kanbanTickets = await pool.query(`
             SELECT t.*, 
                    p.name as project_name, 
@@ -21,9 +21,10 @@ exports.getUserCredits = async (req, res) => {
                    ce.status as evaluation_status,
                    ce.ticket_mark
             FROM tickets t
+            JOIN ticket_assignments ta ON t.id = ta.ticket_id
             LEFT JOIN projects p ON t.project_id = p.id
-            LEFT JOIN credit_evaluations ce ON t.id = ce.ticket_id
-            WHERE t.assigned_to_user_id = $1
+            LEFT JOIN credit_evaluations ce ON t.id = ce.ticket_id AND ce.assignee_user_id = $1
+            WHERE ta.user_id = $1
             ORDER BY p.name, t.created_at DESC
         `, [userId]);
 
