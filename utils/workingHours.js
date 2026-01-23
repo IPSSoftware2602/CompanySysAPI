@@ -4,6 +4,8 @@
  * Mon-Fri: 9:00am - 6:15pm (9.25 hours) - No lunch break deduction
  * Sat: 9:00am - 1:00pm (4 hours)
  * Sun: Off
+ * 
+ * NOTE: Calculations are forced to Malaysia Time (UTC+8) regardless of server timezone.
  * @param {Date|string} startDate 
  * @param {Date|string} endDate 
  * @returns {number} Total working hours
@@ -17,7 +19,13 @@ function calculateWorkingHours(startDate, endDate) {
     if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
     if (end <= start) return 0;
 
-    // Working periods configuration
+    // Shift dates to Malaysia Time (UTC+8)
+    // We will perform all calculations in this "shifted" timeframe using UTC methods
+    const MYT_OFFSET = 8 * 60 * 60 * 1000;
+    const startMYT = new Date(start.getTime() + MYT_OFFSET);
+    const endMYT = new Date(end.getTime() + MYT_OFFSET);
+
+    // Working periods configuration (in UTC hours 0-23 representing MYT hours)
     // Mon-Fri
     const WEEKDAY_START_HOUR = 9;
     const WEEKDAY_START_MIN = 0;
@@ -31,14 +39,15 @@ function calculateWorkingHours(startDate, endDate) {
     const SAT_END_MIN = 0; // 1:00 PM
 
     /**
-     * Calculate hours within a specific work window for a given day
+     * Calculate hours within a specific work window for a given day (using Shifted UTC times)
      */
     function getHoursInDay(dayDate, startHour, startMin, endHour, endMin, actualStart, actualEnd) {
+        // Create period boundaries in the shifted timezone (using UTC methods)
         const periodStartTime = new Date(dayDate);
-        periodStartTime.setHours(startHour, startMin, 0, 0);
+        periodStartTime.setUTCHours(startHour, startMin, 0, 0);
 
         const periodEndTime = new Date(dayDate);
-        periodEndTime.setHours(endHour, endMin, 0, 0);
+        periodEndTime.setUTCHours(endHour, endMin, 0, 0);
 
         // Clamp to actual start/end times
         const effectiveStart = actualStart > periodStartTime ? actualStart : periodStartTime;
@@ -52,28 +61,28 @@ function calculateWorkingHours(startDate, endDate) {
     }
 
     let totalHours = 0;
-    let current = new Date(start);
-    current.setHours(0, 0, 0, 0); // Start of day
+    let current = new Date(startMYT);
+    current.setUTCHours(0, 0, 0, 0); // Start of day in MYT
 
-    const endOfLastDay = new Date(end);
-    endOfLastDay.setHours(23, 59, 59, 999);
+    const endOfLastDay = new Date(endMYT);
+    endOfLastDay.setUTCHours(23, 59, 59, 999);
 
     // Iterate day by day
     while (current <= endOfLastDay) {
-        const dayOfWeek = current.getDay();
+        const dayOfWeek = current.getUTCDay(); // 0-6 (Sun-Sat) in MYT
 
         // Check if working day (Mon-Sat)
         if (dayOfWeek !== 0) { // 0 is Sunday
             // Determine actual start and end for this day
             const dayStart = new Date(current);
-            dayStart.setHours(0, 0, 0, 0);
+            dayStart.setUTCHours(0, 0, 0, 0);
 
             const dayEnd = new Date(current);
-            dayEnd.setHours(23, 59, 59, 999);
+            dayEnd.setUTCHours(23, 59, 59, 999);
 
             // Effective boundaries for this day
-            const effectiveDayStart = start > dayStart ? start : dayStart;
-            const effectiveDayEnd = end < dayEnd ? end : dayEnd;
+            const effectiveDayStart = startMYT > dayStart ? startMYT : dayStart;
+            const effectiveDayEnd = endMYT < dayEnd ? endMYT : dayEnd;
 
             if (effectiveDayEnd > effectiveDayStart) {
                 if (dayOfWeek === 6) {
@@ -97,7 +106,7 @@ function calculateWorkingHours(startDate, endDate) {
         }
 
         // Move to next day
-        current.setDate(current.getDate() + 1);
+        current.setUTCDate(current.getUTCDate() + 1);
     }
 
     return Math.round(totalHours * 100) / 100; // Round to 2 decimal places
