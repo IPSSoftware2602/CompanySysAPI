@@ -17,11 +17,11 @@ exports.getUserCredits = async (req, res) => {
         if (startDate && endDate) {
             // Filter by date range (e.g. for Weekly view)
             params.push(startDate, endDate);
-            dateFilter = `AND t.created_at >= $2 AND t.created_at <= $3`;
+            dateFilter = `AND t.start_date >= $2 AND t.start_date <= $3`;
         } else if (month) {
             // Filter by month
             params.push(month);
-            dateFilter = `AND TO_CHAR(t.created_at, 'YYYY-MM') = $2`;
+            dateFilter = `AND TO_CHAR(t.start_date, 'YYYY-MM') = $2`;
         }
 
         // 1. Get Kanban Tickets with dates - using ticket_assignments junction table
@@ -39,7 +39,7 @@ exports.getUserCredits = async (req, res) => {
             LEFT JOIN projects p ON t.project_id = p.id
             LEFT JOIN credit_evaluations ce ON t.id = ce.ticket_id AND ce.assignee_user_id = $1
             WHERE ta.user_id = $1 ${dateFilter}
-            ORDER BY p.name, t.created_at DESC
+            ORDER BY p.name, t.start_date DESC
         `;
 
         const kanbanTickets = await pool.query(kanbanQuery, params);
@@ -53,9 +53,9 @@ exports.getUserCredits = async (req, res) => {
         // 2. Get Support Tickets with dates
         let supportDateFilter = '';
         if (startDate && endDate) {
-            supportDateFilter = `AND st.created_at >= $2 AND st.created_at <= $3`;
+            supportDateFilter = `AND st.start_date >= $2 AND st.start_date <= $3`;
         } else if (month) {
-            supportDateFilter = `AND TO_CHAR(st.created_at, 'YYYY-MM') = $2`;
+            supportDateFilter = `AND TO_CHAR(st.start_date, 'YYYY-MM') = $2`;
         }
 
         const supportQuery = `
