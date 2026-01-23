@@ -1,7 +1,9 @@
 /**
  * Calculate working hours between two dates
- * Working hours: 9am - 1pm (4 hours) + 2pm - 6pm (4 hours) = 8 hours/day
- * Monday to Friday only
+ * Working hours: 
+ * Mon-Fri: 9:00am - 6:15pm (9.25 hours) - No lunch break deduction
+ * Sat: 9:00am - 1:00pm (4 hours)
+ * Sun: Off
  * @param {Date|string} startDate 
  * @param {Date|string} endDate 
  * @returns {number} Total working hours
@@ -15,21 +17,28 @@ function calculateWorkingHours(startDate, endDate) {
     if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
     if (end <= start) return 0;
 
-    // Working periods: 9am-1pm (morning) and 2pm-6pm (afternoon)
-    const MORNING_START = 9;
-    const MORNING_END = 13;   // 1pm
-    const AFTERNOON_START = 14; // 2pm
-    const AFTERNOON_END = 18;   // 6pm
+    // Working periods configuration
+    // Mon-Fri
+    const WEEKDAY_START_HOUR = 9;
+    const WEEKDAY_START_MIN = 0;
+    const WEEKDAY_END_HOUR = 18;
+    const WEEKDAY_END_MIN = 15; // 6:15 PM
+
+    // Saturday
+    const SAT_START_HOUR = 9;
+    const SAT_START_MIN = 0;
+    const SAT_END_HOUR = 13;
+    const SAT_END_MIN = 0; // 1:00 PM
 
     /**
-     * Calculate hours within a specific work period for a given day
+     * Calculate hours within a specific work window for a given day
      */
-    function getHoursInPeriod(dayDate, periodStart, periodEnd, actualStart, actualEnd) {
+    function getHoursInDay(dayDate, startHour, startMin, endHour, endMin, actualStart, actualEnd) {
         const periodStartTime = new Date(dayDate);
-        periodStartTime.setHours(periodStart, 0, 0, 0);
+        periodStartTime.setHours(startHour, startMin, 0, 0);
 
         const periodEndTime = new Date(dayDate);
-        periodEndTime.setHours(periodEnd, 0, 0, 0);
+        periodEndTime.setHours(endHour, endMin, 0, 0);
 
         // Clamp to actual start/end times
         const effectiveStart = actualStart > periodStartTime ? actualStart : periodStartTime;
@@ -53,8 +62,8 @@ function calculateWorkingHours(startDate, endDate) {
     while (current <= endOfLastDay) {
         const dayOfWeek = current.getDay();
 
-        // Skip weekends (0 = Sunday, 6 = Saturday)
-        if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        // Check if working day (Mon-Sat)
+        if (dayOfWeek !== 0) { // 0 is Sunday
             // Determine actual start and end for this day
             const dayStart = new Date(current);
             dayStart.setHours(0, 0, 0, 0);
@@ -67,13 +76,23 @@ function calculateWorkingHours(startDate, endDate) {
             const effectiveDayEnd = end < dayEnd ? end : dayEnd;
 
             if (effectiveDayEnd > effectiveDayStart) {
-                // Calculate morning period (9am - 1pm)
-                const morningHours = getHoursInPeriod(current, MORNING_START, MORNING_END, effectiveDayStart, effectiveDayEnd);
-
-                // Calculate afternoon period (2pm - 6pm)
-                const afternoonHours = getHoursInPeriod(current, AFTERNOON_START, AFTERNOON_END, effectiveDayStart, effectiveDayEnd);
-
-                totalHours += morningHours + afternoonHours;
+                if (dayOfWeek === 6) {
+                    // Saturday: 9am - 1pm
+                    totalHours += getHoursInDay(
+                        current,
+                        SAT_START_HOUR, SAT_START_MIN,
+                        SAT_END_HOUR, SAT_END_MIN,
+                        effectiveDayStart, effectiveDayEnd
+                    );
+                } else {
+                    // Mon-Fri: 9am - 6:15pm
+                    totalHours += getHoursInDay(
+                        current,
+                        WEEKDAY_START_HOUR, WEEKDAY_START_MIN,
+                        WEEKDAY_END_HOUR, WEEKDAY_END_MIN,
+                        effectiveDayStart, effectiveDayEnd
+                    );
+                }
             }
         }
 
