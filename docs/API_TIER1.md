@@ -1,0 +1,276 @@
+# Tier 1 API Contract
+
+Endpoints added or changed by the Tier 1 foundation work
+(branch `feature/tier1-foundation`). Everything here is implemented and
+verified against the live database.
+
+All endpoints require `Authorization: Bearer <jwt>`. Missing/invalid token
+returns `401`/`403` with no body.
+
+Base URL: `/api`
+
+---
+
+## 1. Unified My Work
+
+### `GET /api/my-work`
+
+Returns the caller's active work — kanban tickets and support tickets merged
+into one normalized list, grouped into buckets.
+
+**Query params**
+
+| Param | Type | Notes |
+|---|---|---|
+| `userId` | uuid | Optional. View another user's work. Requires role `CEO`, `TECH_LEAD`, `PM` or `ADMIN`; otherwise `403`. |
+
+**Response `200`**
+
+```json
+{
+  "user_id": "8a837acc-6c62-4a42-8288-3f40daaea31e",
+  "counts": {
+    "overdue": 2, "due_today": 0, "this_week": 0,
+    "blocked": 1, "awaiting_review": 7, "active": 23
+  },
+  "buckets": {
+    "overdue": [], "due_today": [], "this_week": [],
+    "blocked": [], "awaiting_review": [], "active": []
+  }
+}
+```
+
+**Work item shape**
+
+| Field | Notes |
+|---|---|
+| `id` | uuid of the ticket or support ticket |
+| `work_type` | `KANBAN` or `SUPPORT` — drives which detail route to open |
+| `title` | |
+| `status` | kanban `ticket_status`, support `support_ticket_status` |
+| `priority` | `P0`–`P3` for support; `null` for kanban |
+| `due_date` | kanban → `end_date`; support → `sla_due_at` |
+| `is_blocked`, `blocked_reason` | |
+| `project_id`, `project_name`, `client_name` | |
+| `updated_at` | |
+| `ticket_key`, `linked_ticket_id` | support items only |
+
+**Bucketing rules** — buckets are *independent classifications*, not exclusive.
+One item can appear in several (e.g. blocked **and** overdue). `active` contains
+everything.
+
+- `overdue` — `due_date` before today
+- `due_today` — `due_date` is today
+- `this_week` — `due_date` within the next 7 days
+- `blocked` — `is_blocked = true`
+- `awaiting_review` — kanban `CODE_REVIEW`/`QA`; support `TESTING`/`PENDING_DEPLOYMENT`
+- `active` — all non-terminal work
+
+Terminal items are **excluded entirely**: kanban `DONE`, support `COMPLETED`/`CLOSED`,
+and anything soft-deleted.
+
+Kanban assignment is resolved via the `ticket_assignments` junction **or** the
+legacy `assigned_to_user_id`. Support items match `assigned_dev_id` **or**
+`assigned_pm_id`.
+
+---
+
+## 2. Blocker tracking
+
+Available on both ticket types with identical semantics.
+
+### `POST /api/tickets/:id/block`
+### `POST /api/support-tickets/:id/block`
+
+**Body**
+
+```json
+{ "reason": "Waiting on API keys from client" }
+```
+
+`reason` is **required** and must be non-empty — omitting it returns `400`.
+The server stamps `blocked_at` and `blocked_by_user_id` from the token.
+
+**Response `200`** — the updated ticket, including `is_blocked: true`,
+`blocked_reason`, `blocked_at`, `blocked_by_user_id`.
+
+### `POST /api/tickets/:id/unblock`
+### `POST /api/support-tickets/:id/unblock`
+
+No body. Clears all four blocker fields. Returns the updated ticket.
+
+`404` if the ticket does not exist or is soft-deleted.
+
+---
+
+## 3. Support → development linking
+
+### `POST /api/support-tickets/:id/convert`
+
+Creates a **new** dev ticket from a support ticket, inside one transaction.
+
+**Body**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `project_id` | uuid | yes | Target dev project |
+| `list_id` | uuid | no | Defaults to the project's first list by position |
+
+**Inherited onto the new ticket**
+
+- Title becomes `[SC-YYYYMM-NNNN] <original title>`
+- Description = original description + steps to reproduce + a provenance line
+- Attachments copied
+- `assigned_dev_id` becomes the ticket assignee (and is mirrored into
+  `ticket_assignments` so it appears on boards and in My Work)
+- `request_type` maps to `ticket_type`:
+  `BUG→BUG`, `FEATURE→FEATURE`, everything else → `CHANGE_REQUEST`
+
+**Response `201`**
+
+```json
+{ "support_ticket_id": "...", "ticket": { "id": "...", "type": "BUG", "...": "" } }
+```
+
+**`409`** if the support ticket already has a `linked_ticket_id` — convert is
+one-shot by design:
+
+```json
+{ "error": "This support ticket is already linked to a dev ticket",
+  "linked_ticket_id": "..." }
+```
+
+### `POST /api/support-tickets/:id/link`
+
+Attaches an **existing** dev ticket instead of creating one.
+
+```json
+{ "ticket_id": "72cd7268-3999-4dfe-9d36-2ea2f254e91b" }
+```
+
+`404` if either ticket is missing or soft-deleted.
+
+---
+
+## 4. Deletion is now soft
+
+### `DELETE /api/tickets/:id`
+### `DELETE /api/support-tickets/:id`
+
+**Behaviour change.** These previously hard-deleted the row along with a manual
+cascade across comments, checklists, assignments, transitions and credit
+evaluations. They now set `deleted_at` and **leave every related record intact**.
+
+**Body** (optional but recommended)
+
+```json
+{ "reason": "duplicate of SC-202601-0002" }
+```
+
+The reason is stored on the audit record.
+
+**Response `200`** — `{ "message": "...deleted successfully", "ticket": { ... } }`
+
+Soft-deleted items disappear from every read path: detail `GET` (`404`),
+project boards, the support board, search, reports, credit queries and project
+ticket counts. There is currently **no restore endpoint** — recovery is a
+direct `UPDATE ... SET deleted_at = NULL`.
+
+---
+
+## 5. Validation
+
+All mutation routes for tickets, support tickets and credits validate input.
+Validation is deliberately lenient: it asserts required fields, formats and
+enum membership, and **ignores unknown keys** so existing payloads keep working.
+
+**Error `400`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    { "field": "project_id", "message": "project_id is required and must be a UUID" }
+  ]
+}
+```
+
+`details` is always an array and is safe to render field-by-field.
+
+---
+
+## 6. Credit evaluations
+
+### `POST /api/credits/evaluation`
+
+Unchanged shape, two new behaviours:
+
+- **Monthly lock** — if the evaluation has `locked_at` set, a non-`ADMIN` caller
+  gets `403`:
+  `{ "error": "This evaluation is locked. Only an admin can adjust it." }`
+- **Column whitelist** — only known evaluation columns are written. Unknown keys
+  are silently dropped rather than reaching SQL.
+
+Create and update are both audited with before/after values.
+
+---
+
+## 7. Audit log
+
+Every critical action writes to `audit_logs`: actor, IP, user agent, entity,
+before/after values and an optional reason.
+
+Audited: `DELETE`, `STATUS_CHANGE`, `BLOCK`, `UNBLOCK`, `CONVERT`, `LINK`,
+and credit `CREATE`/`UPDATE`.
+
+Audit writes never fail the user's action — a logging error is recorded to the
+console only. **No read endpoint is exposed yet**; query the table directly, or
+ask for `GET /api/audit-logs` to be added.
+
+---
+
+## Enum reference
+
+Source of truth is `constants/index.js`, which mirrors the live PostgreSQL
+enums. Note `schema.sql` is **stale** — do not generate types from it.
+
+| Enum | Values |
+|---|---|
+| `user_role` | `CEO`, `TECH_LEAD`, `PM`, `QA`, `DEV`, `FINANCE`, `ADMIN` |
+| `ticket_status` | `BACKLOG`, `TECH_DESIGN`, `READY_FOR_DEV`, `IN_PROGRESS`, `CODE_REVIEW`, `QA`, `READY_TO_DEPLOY`, `DONE` |
+| `ticket_type` | `FEATURE`, `BUG`, `CHANGE_REQUEST` |
+| `support_ticket_status` | `NEW`, `TRIAGING`, `DOING`, `WAITING_FOR_CLIENT`, `TESTING`, `PENDING_DEPLOYMENT`, `COMPLETED`, `CLOSED` |
+| `support_priority` | `P0`, `P1`, `P2`, `P3` |
+| `support_request_type` | `BUG`, `AMENDMENT`, `CHANGE_REQUEST`, `FEATURE`, `QUESTION`, `DATA_ISSUE` |
+| `credit_status` | `DRAFT`, `SUBMITTED`, `APPROVED`, `ADJUSTED`, `REJECTED` |
+
+---
+
+## Suggested frontend work
+
+1. **My Work screen** — the highest-value addition. One call, render the six
+   buckets; branch detail navigation on `work_type`.
+2. **Block / unblock control** on both ticket detail views, with a required
+   reason prompt. Surface `blocked_reason` as a banner.
+3. **"Convert to dev task"** action on support tickets — needs a target project
+   picker. Hide or disable it once `linked_ticket_id` is set, and link through
+   to the dev ticket instead.
+4. **Delete confirmation** — add an optional reason field, and soften the copy:
+   deletion is now recoverable, not permanent.
+5. **Validation errors** — render `details[]` against the matching form fields
+   rather than showing a generic failure toast.
+
+---
+
+## Deployment
+
+```bash
+DB_USER=<user> DB_NAME=ios_db node migrate_tier1.js
+```
+
+Additive and idempotent (`ADD COLUMN IF NOT EXISTS`, no backfill), safe to
+re-run. Rollback is dropping the added columns and the `audit_logs` table.
+
+**Set `JWT_SECRET` in the environment before deploying.** `authMiddleware.js`
+falls back to a hardcoded default, so any token signed with that public string
+is accepted as valid — including one claiming `role: ADMIN`.
