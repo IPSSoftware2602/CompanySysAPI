@@ -271,6 +271,14 @@ DB_USER=<user> DB_NAME=ios_db node migrate_tier1.js
 Additive and idempotent (`ADD COLUMN IF NOT EXISTS`, no backfill), safe to
 re-run. Rollback is dropping the added columns and the `audit_logs` table.
 
-**Set `JWT_SECRET` in the environment before deploying.** `authMiddleware.js`
-falls back to a hardcoded default, so any token signed with that public string
-is accepted as valid — including one claiming `role: ADMIN`.
+**`JWT_SECRET` is now mandatory.** The application refuses to start if it is
+unset, or if it is still the old hardcoded `super_secret_key_change_me` value.
+Copy `.env.example` to `.env` and fill it in (local), or set real environment
+variables (production). Generate a secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Rotating the secret **invalidates every existing token**, so all users are
+signed out and must log in again. Deploy at a quiet time.

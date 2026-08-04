@@ -1,0 +1,16 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# OS noise
+.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
+server.log
+
+# Uploads (runtime user content)
+uploads/*
+!uploads/.gitkeep
