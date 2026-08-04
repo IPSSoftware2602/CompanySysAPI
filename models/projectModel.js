@@ -19,9 +19,9 @@ class Project {
         const result = await db.query(`
             SELECT p.*, 
                    (SELECT json_object_agg(status, count) 
-                    FROM (SELECT status, COUNT(*) as count 
-                          FROM tickets 
-                          WHERE project_id = p.id 
+                    FROM (SELECT status, COUNT(*) as count
+                          FROM tickets
+                          WHERE project_id = p.id AND deleted_at IS NULL
                           GROUP BY status) t
                    ) as ticket_counts
             FROM projects p

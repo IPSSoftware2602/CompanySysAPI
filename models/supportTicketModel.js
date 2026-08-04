@@ -55,7 +55,7 @@ class SupportTicket {
              LEFT JOIN users c ON st.created_by_user_id = c.id
              LEFT JOIN users pm ON st.assigned_pm_id = pm.id
              LEFT JOIN users dev ON st.assigned_dev_id = dev.id
-             WHERE st.id = $1`,
+             WHERE st.id = $1 AND st.deleted_at IS NULL`,
             [id]
         );
         return result.rows[0];
@@ -65,7 +65,8 @@ class SupportTicket {
         const allowed = [
             'supporting_project_id', 'request_type', 'priority', 'risk_level', 'status',
             'title', 'description', 'steps_to_reproduce', 'attachments',
-            'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at'
+            'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at',
+            'linked_ticket_id'
         ];
 
         const fields = [];
@@ -87,6 +88,46 @@ class SupportTicket {
         console.log('Values:', values);
 
         const result = await db.query(queryText, values);
+        return result.rows[0];
+    }
+
+    static async setBlocked(id, { reason, userId }) {
+        const result = await db.query(
+            `UPDATE support_tickets
+             SET is_blocked = TRUE, blocked_reason = $1, blocked_at = NOW(),
+                 blocked_by_user_id = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3 AND deleted_at IS NULL RETURNING *`,
+            [reason, userId, id]
+        );
+        return result.rows[0];
+    }
+
+    static async clearBlocked(id) {
+        const result = await db.query(
+            `UPDATE support_tickets
+             SET is_blocked = FALSE, blocked_reason = NULL, blocked_at = NULL,
+                 blocked_by_user_id = NULL, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async softDelete(id) {
+        const result = await db.query(
+            `UPDATE support_tickets SET deleted_at = NOW(), updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async setLinkedTicket(id, ticketId, client = db) {
+        const result = await client.query(
+            `UPDATE support_tickets SET linked_ticket_id = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2 AND deleted_at IS NULL RETURNING *`,
+            [ticketId, id]
+        );
         return result.rows[0];
     }
 }

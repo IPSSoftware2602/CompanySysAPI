@@ -19,7 +19,7 @@ class Ticket {
     }
 
     static async getById(id) {
-        const result = await db.query('SELECT * FROM tickets WHERE id = $1', [id]);
+        const result = await db.query('SELECT * FROM tickets WHERE id = $1 AND deleted_at IS NULL', [id]);
         const ticket = result.rows[0];
         if (!ticket) return null;
 
@@ -52,8 +52,8 @@ class Ticket {
                         WHERE ta.ticket_id = t.id),
                         '[]'::json
                    ) as members
-            FROM tickets t 
-            WHERE t.project_id = $1 
+            FROM tickets t
+            WHERE t.project_id = $1 AND t.deleted_at IS NULL
             ORDER BY t.list_id, t.position ASC, t.created_at DESC
         `, [projectId]);
         return result.rows;
@@ -150,6 +150,37 @@ class Ticket {
         const result = await db.query(
             `UPDATE tickets SET ${fields.join(', ')} WHERE id = $${index} RETURNING *`,
             values
+        );
+        return result.rows[0];
+    }
+
+    static async setBlocked(id, { reason, userId }) {
+        const result = await db.query(
+            `UPDATE tickets
+             SET is_blocked = TRUE, blocked_reason = $1, blocked_at = NOW(),
+                 blocked_by_user_id = $2, updated_at = NOW()
+             WHERE id = $3 AND deleted_at IS NULL RETURNING *`,
+            [reason, userId, id]
+        );
+        return result.rows[0];
+    }
+
+    static async clearBlocked(id) {
+        const result = await db.query(
+            `UPDATE tickets
+             SET is_blocked = FALSE, blocked_reason = NULL, blocked_at = NULL,
+                 blocked_by_user_id = NULL, updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async softDelete(id) {
+        const result = await db.query(
+            `UPDATE tickets SET deleted_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
         );
         return result.rows[0];
     }

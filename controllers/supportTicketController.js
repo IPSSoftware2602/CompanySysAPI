@@ -1,5 +1,8 @@
 const SupportTicket = require('../models/supportTicketModel');
+const Ticket = require('../models/ticketModel');
 const db = require('../db');
+const AuditService = require('../services/auditService');
+const { AUDIT_ACTION, AUDIT_ENTITY, SUPPORT_TO_TICKET_TYPE } = require('../constants');
 
 // Helper for SLA Calculation
 // Helper for SLA Calculation
@@ -133,6 +136,15 @@ exports.transitionTicket = async (req, res) => {
             } catch (logErr) {
                 console.log('Transition log failed (non-critical):', logErr.message);
             }
+
+            await AuditService.record(req, {
+                action: AUDIT_ACTION.STATUS_CHANGE,
+                entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+                entity_id: id,
+                before_data: { status: ticket.status },
+                after_data: { status },
+                reason,
+            });
         }
 
         res.json(updatedTicket);
@@ -189,7 +201,8 @@ exports.getBoardTickets = async (req, res) => {
                    assignee.full_name as assigned_to_name
             FROM support_tickets st
             LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
-            LEFT JOIN users assignee ON st.assigned_dev_id = assignee.id 
+            LEFT JOIN users assignee ON st.assigned_dev_id = assignee.id
+            WHERE st.deleted_at IS NULL
             ORDER BY st.created_at DESC
         `);
         res.json(result.rows);
@@ -202,21 +215,173 @@ exports.getBoardTickets = async (req, res) => {
 exports.deleteSupportTicket = async (req, res) => {
     try {
         const { id } = req.params;
+        const { reason } = req.body || {};
 
-        // Delete related records
-        await db.query('DELETE FROM support_ticket_transitions WHERE support_ticket_id = $1', [id]);
-        await db.query('DELETE FROM credit_evaluations WHERE support_ticket_id = $1', [id]);
-
-        // Delete the ticket
-        const result = await db.query('DELETE FROM support_tickets WHERE id = $1 RETURNING *', [id]);
-
-        if (result.rows.length === 0) {
+        // Soft delete: preserve the row and its transitions/evaluations.
+        const ticket = await SupportTicket.softDelete(id);
+        if (!ticket) {
             return res.status(404).json({ error: 'Support ticket not found' });
         }
 
-        res.json({ message: 'Support ticket deleted successfully', ticket: result.rows[0] });
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.DELETE,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+            before_data: { ticket_key: ticket.ticket_key, title: ticket.title, status: ticket.status },
+            reason,
+        });
+
+        res.json({ message: 'Support ticket deleted successfully', ticket });
     } catch (err) {
         console.error('Delete support ticket error:', err);
         res.status(500).json({ error: 'Failed to delete support ticket' });
+    }
+};
+
+exports.blockSupportTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body;
+        const ticket = await SupportTicket.setBlocked(id, { reason, userId: req.user?.id });
+        if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.BLOCK,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+            after_data: { blocked_reason: reason },
+            reason,
+        });
+        res.json(ticket);
+    } catch (err) {
+        console.error('Block support ticket error:', err);
+        res.status(500).json({ error: 'Failed to block support ticket' });
+    }
+};
+
+exports.unblockSupportTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const ticket = await SupportTicket.clearBlocked(id);
+        if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.UNBLOCK,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+        });
+        res.json(ticket);
+    } catch (err) {
+        console.error('Unblock support ticket error:', err);
+        res.status(500).json({ error: 'Failed to unblock support ticket' });
+    }
+};
+
+// Link an existing dev ticket to this support ticket (no new ticket created).
+exports.linkTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { ticket_id } = req.body;
+
+        const support = await SupportTicket.getById(id);
+        if (!support) return res.status(404).json({ error: 'Support ticket not found' });
+
+        const target = await Ticket.getById(ticket_id);
+        if (!target) return res.status(404).json({ error: 'Target dev ticket not found' });
+
+        const updated = await SupportTicket.setLinkedTicket(id, ticket_id);
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.LINK,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+            after_data: { linked_ticket_id: ticket_id },
+        });
+        res.json(updated);
+    } catch (err) {
+        console.error('Link support ticket error:', err);
+        res.status(500).json({ error: 'Failed to link support ticket' });
+    }
+};
+
+// Convert a support ticket into a new development ticket, inheriting its context.
+exports.convertToTicket = async (req, res) => {
+    const { id } = req.params;
+    const { project_id, list_id } = req.body;
+
+    const client = await db.pool.connect();
+    try {
+        const support = await SupportTicket.getById(id);
+        if (!support) {
+            client.release();
+            return res.status(404).json({ error: 'Support ticket not found' });
+        }
+        if (support.linked_ticket_id) {
+            client.release();
+            return res.status(409).json({
+                error: 'This support ticket is already linked to a dev ticket',
+                linked_ticket_id: support.linked_ticket_id,
+            });
+        }
+
+        await client.query('BEGIN');
+
+        // Pick a target list: the caller's, else the project's first list by position.
+        let targetListId = list_id || null;
+        if (!targetListId) {
+            const listRes = await client.query(
+                'SELECT id FROM lists WHERE project_id = $1 ORDER BY position ASC NULLS LAST, created_at ASC LIMIT 1',
+                [project_id]
+            );
+            targetListId = listRes.rows[0]?.id || null;
+        }
+
+        const ticketType = SUPPORT_TO_TICKET_TYPE[support.request_type] || 'CHANGE_REQUEST';
+        const title = `[${support.ticket_key}] ${support.title}`;
+        const descriptionParts = [];
+        if (support.description) descriptionParts.push(support.description);
+        if (support.steps_to_reproduce) descriptionParts.push(`\n\nSteps to reproduce:\n${support.steps_to_reproduce}`);
+        descriptionParts.push(`\n\n(Converted from support ticket ${support.ticket_key})`);
+
+        const insertRes = await client.query(
+            `INSERT INTO tickets (project_id, title, description, type, assigned_to_user_id, list_id, start_date, attachments)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+             RETURNING *`,
+            [
+                project_id,
+                title,
+                descriptionParts.join(''),
+                ticketType,
+                support.assigned_dev_id || null,
+                targetListId,
+                JSON.stringify(support.attachments || []),
+            ]
+        );
+        const newTicket = insertRes.rows[0];
+
+        // Mirror assignment into the members junction so it shows in My Work / boards.
+        if (support.assigned_dev_id) {
+            await client.query(
+                'INSERT INTO ticket_assignments (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                [newTicket.id, support.assigned_dev_id]
+            );
+        }
+
+        await SupportTicket.setLinkedTicket(id, newTicket.id, client);
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.CONVERT,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+            after_data: { linked_ticket_id: newTicket.id, project_id, ticket_type: ticketType },
+        }, client);
+
+        await client.query('COMMIT');
+        res.status(201).json({ support_ticket_id: id, ticket: newTicket });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Convert support ticket error:', err);
+        res.status(500).json({ error: 'Failed to convert support ticket', details: err.message });
+    } finally {
+        client.release();
     }
 };
