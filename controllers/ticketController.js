@@ -240,6 +240,34 @@ exports.deleteTicket = async (req, res) => {
     }
 };
 
+exports.restoreTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body || {};
+
+        const ticket = await Ticket.restore(id);
+        if (!ticket) {
+            // Distinguish "no such ticket" from "it was never deleted".
+            const existing = await Ticket.getByIdIncludingDeleted(id);
+            if (!existing) return res.status(404).json({ error: 'Ticket not found' });
+            return res.status(409).json({ error: 'Ticket is not deleted', ticket: existing });
+        }
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.RESTORE,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+            after_data: { title: ticket.title, status: ticket.status },
+            reason,
+        });
+
+        res.json({ message: 'Ticket restored successfully', ticket });
+    } catch (err) {
+        console.error('Restore ticket error:', err);
+        res.status(500).json({ error: 'Failed to restore ticket', details: err.message });
+    }
+};
+
 exports.blockTicket = async (req, res) => {
     try {
         const { id } = req.params;

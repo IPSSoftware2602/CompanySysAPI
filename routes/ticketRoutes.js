@@ -4,6 +4,7 @@ const ticketController = require('../controllers/ticketController');
 const authMiddleware = require('../middleware/authMiddleware');
 const validate = require('../middleware/validate');
 const v = require('../validators/ticketValidators');
+const { MANAGER_ROLES } = require('../constants');
 
 router.use(authMiddleware.authenticateToken);
 
@@ -12,6 +13,7 @@ router.get('/project/:projectId', ticketController.getProjectTickets);
 router.get('/:id', v.idParam, validate, ticketController.getTicketById);
 router.put('/:id', v.updateTicket, validate, ticketController.updateTicket);
 router.delete('/:id', v.idParam, validate, ticketController.deleteTicket);
+router.post('/:id/restore', authMiddleware.requireAnyRole(MANAGER_ROLES), v.idParam, validate, ticketController.restoreTicket);
 router.post('/:id/transition', v.transitionTicket, validate, ticketController.transitionTicket);
 router.post('/:id/block', v.blockTicket, validate, ticketController.blockTicket);
 router.post('/:id/unblock', v.idParam, validate, ticketController.unblockTicket);

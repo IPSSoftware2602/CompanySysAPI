@@ -238,6 +238,41 @@ exports.deleteSupportTicket = async (req, res) => {
     }
 };
 
+exports.restoreSupportTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body || {};
+
+        const ticket = await SupportTicket.restore(id);
+        if (!ticket) {
+            const existing = await SupportTicket.getByIdIncludingDeleted(id);
+            if (!existing) return res.status(404).json({ error: 'Support ticket not found' });
+            return res.status(409).json({ error: 'Support ticket is not deleted', ticket: existing });
+        }
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.RESTORE,
+            entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
+            entity_id: id,
+            after_data: { ticket_key: ticket.ticket_key, status: ticket.status },
+            reason,
+        });
+
+        // A linked dev ticket may have been deleted while this was gone —
+        // surface that rather than returning a silently dangling reference.
+        const withLink = await SupportTicket.getByIdIncludingDeleted(id);
+
+        res.json({
+            message: 'Support ticket restored successfully',
+            ticket,
+            linked_ticket_active: withLink?.linked_ticket_active ?? null,
+        });
+    } catch (err) {
+        console.error('Restore support ticket error:', err);
+        res.status(500).json({ error: 'Failed to restore support ticket', details: err.message });
+    }
+};
+
 exports.blockSupportTicket = async (req, res) => {
     try {
         const { id } = req.params;

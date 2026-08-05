@@ -122,6 +122,33 @@ class SupportTicket {
         return result.rows[0];
     }
 
+    static async restore(id) {
+        const result = await db.query(
+            `UPDATE support_tickets SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    // Fetch regardless of soft-delete state, and report whether the linked dev
+    // ticket (if any) still exists — a restored support ticket can point at a
+    // ticket that was deleted in the meantime.
+    static async getByIdIncludingDeleted(id) {
+        const result = await db.query(
+            `SELECT st.*,
+                    CASE
+                        WHEN st.linked_ticket_id IS NULL THEN NULL
+                        ELSE (t.id IS NOT NULL AND t.deleted_at IS NULL)
+                    END AS linked_ticket_active
+             FROM support_tickets st
+             LEFT JOIN tickets t ON st.linked_ticket_id = t.id
+             WHERE st.id = $1`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
     static async setLinkedTicket(id, ticketId, client = db) {
         const result = await client.query(
             `UPDATE support_tickets SET linked_ticket_id = $1, updated_at = CURRENT_TIMESTAMP

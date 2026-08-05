@@ -184,6 +184,24 @@ class Ticket {
         );
         return result.rows[0];
     }
+
+    // Clears deleted_at. Matches only rows that are currently deleted, so
+    // restoring a live ticket is a no-op rather than a silent success.
+    static async restore(id) {
+        const result = await db.query(
+            `UPDATE tickets SET deleted_at = NULL, updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    // Fetch regardless of soft-delete state — used to distinguish
+    // "not found" from "already restored".
+    static async getByIdIncludingDeleted(id) {
+        const result = await db.query('SELECT * FROM tickets WHERE id = $1', [id]);
+        return result.rows[0];
+    }
 }
 
 module.exports = Ticket;

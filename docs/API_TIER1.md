@@ -173,8 +173,32 @@ The reason is stored on the audit record.
 
 Soft-deleted items disappear from every read path: detail `GET` (`404`),
 project boards, the support board, search, reports, credit queries and project
-ticket counts. There is currently **no restore endpoint** — recovery is a
-direct `UPDATE ... SET deleted_at = NULL`.
+ticket counts.
+
+### `POST /api/tickets/:id/restore`
+### `POST /api/support-tickets/:id/restore`
+
+Undoes a soft delete. **Manager-only** (`CEO`, `TECH_LEAD`, `PM`, `ADMIN`);
+others get `403`.
+
+**Body** (optional) — `{ "reason": "deleted by mistake" }`
+
+| Status | Meaning |
+|---|---|
+| `200` | Restored. Returns the ticket with `deleted_at: null`. |
+| `409` | The ticket exists but is not deleted (returns it unchanged). |
+| `404` | No such ticket. |
+
+The support variant also returns `linked_ticket_active`, because the dev ticket
+it points at may have been deleted while it was gone:
+
+| Value | Meaning |
+|---|---|
+| `null` | No linked dev ticket |
+| `true` | Linked ticket exists and is live |
+| `false` | Linked ticket was deleted — the link is dangling |
+
+Restores are audited as action `RESTORE`.
 
 ---
 
@@ -224,8 +248,47 @@ Audited: `DELETE`, `STATUS_CHANGE`, `BLOCK`, `UNBLOCK`, `CONVERT`, `LINK`,
 and credit `CREATE`/`UPDATE`.
 
 Audit writes never fail the user's action — a logging error is recorded to the
-console only. **No read endpoint is exposed yet**; query the table directly, or
-ask for `GET /api/audit-logs` to be added.
+console only.
+
+### `GET /api/audit-logs`
+
+**Manager-only** (`CEO`, `TECH_LEAD`, `PM`, `ADMIN`) — records contain IP
+addresses and before/after credit values, so this is deliberately not
+self-service. Non-managers get `403`.
+
+**Query params** — all optional, all combinable
+
+| Param | Notes |
+|---|---|
+| `entity_type` | `TICKET`, `SUPPORT_TICKET`, `CREDIT_EVALUATION` |
+| `entity_id` | uuid |
+| `user_id` | uuid of the actor |
+| `action` | `CREATE`, `UPDATE`, `DELETE`, `STATUS_CHANGE`, `BLOCK`, `UNBLOCK`, `CONVERT`, `LINK`, `LOCK`, `RESTORE` |
+| `from`, `to` | ISO timestamps |
+| `limit` | default `50`, **clamped to `200`** |
+| `offset` | default `0` |
+
+An unrecognised `entity_type` or `action` returns `400` rather than silently
+returning nothing.
+
+**Response `200`**
+
+```json
+{
+  "total": 128, "limit": 50, "offset": 0, "has_more": true,
+  "logs": [
+    { "action": "DELETE", "entity_type": "TICKET", "entity_id": "...",
+      "user_name": "Waikeat", "user_email": "...", "reason": "duplicate",
+      "before_data": {}, "after_data": null,
+      "ip_address": "::1", "created_at": "..." }
+  ]
+}
+```
+
+### `GET /api/audit-logs/:entityType/:entityId`
+
+Convenience view: the full trail for one record, newest first (max 100).
+Same role restriction.
 
 ---
 
@@ -259,6 +322,10 @@ enums. Note `schema.sql` is **stale** — do not generate types from it.
    deletion is now recoverable, not permanent.
 5. **Validation errors** — render `details[]` against the matching form fields
    rather than showing a generic failure toast.
+6. **Restore action** — expose "undo delete" to managers, and show a warning
+   when a restored support ticket reports `linked_ticket_active: false`.
+7. **Audit trail view** — a history panel on ticket/credit detail via
+   `GET /api/audit-logs/:entityType/:entityId`, visible to managers only.
 
 ---
 

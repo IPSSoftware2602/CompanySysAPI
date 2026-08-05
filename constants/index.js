@@ -69,6 +69,7 @@ const AUDIT_ACTION = {
     CONVERT: 'CONVERT',
     LINK: 'LINK',
     LOCK: 'LOCK',
+    RESTORE: 'RESTORE',
 };
 
 module.exports = {

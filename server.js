@@ -33,6 +33,7 @@ app.use('/api/credits', require('./routes/creditRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/my-work', require('./routes/myWorkRoutes'));
+app.use('/api/audit-logs', require('./routes/auditLogRoutes'));
 app.use('/uploads', express.static('uploads'));
 
 app.get('/', (req, res) => {

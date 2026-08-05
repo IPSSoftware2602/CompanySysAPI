@@ -29,6 +29,43 @@ class AuditLog {
         return result.rows[0];
     }
 
+    /**
+     * Filtered, paginated audit query. Every filter is parameterized; `limit`
+     * is clamped by the caller so a client cannot request an unbounded scan.
+     * Returns { rows, total } so the UI can paginate.
+     */
+    static async getFiltered({ entity_type, entity_id, user_id, action, from, to, limit, offset }) {
+        const conditions = [];
+        const values = [];
+        let idx = 1;
+
+        if (entity_type) { conditions.push(`al.entity_type = $${idx++}`); values.push(entity_type); }
+        if (entity_id) { conditions.push(`al.entity_id = $${idx++}`); values.push(entity_id); }
+        if (user_id) { conditions.push(`al.user_id = $${idx++}`); values.push(user_id); }
+        if (action) { conditions.push(`al.action = $${idx++}`); values.push(action); }
+        if (from) { conditions.push(`al.created_at >= $${idx++}`); values.push(from); }
+        if (to) { conditions.push(`al.created_at <= $${idx++}`); values.push(to); }
+
+        const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+        const countRes = await db.query(
+            `SELECT COUNT(*)::int AS total FROM audit_logs al ${where}`,
+            values
+        );
+
+        const rowsRes = await db.query(
+            `SELECT al.*, u.full_name AS user_name, u.email AS user_email
+             FROM audit_logs al
+             LEFT JOIN users u ON al.user_id = u.id
+             ${where}
+             ORDER BY al.created_at DESC
+             LIMIT $${idx++} OFFSET $${idx}`,
+            [...values, limit, offset]
+        );
+
+        return { rows: rowsRes.rows, total: countRes.rows[0].total };
+    }
+
     static async getByEntity(entity_type, entity_id) {
         const result = await db.query(
             `SELECT al.*, u.full_name AS user_name

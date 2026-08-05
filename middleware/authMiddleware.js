@@ -27,3 +27,16 @@ exports.requireRole = (role) => {
         next();
     };
 };
+
+/**
+ * Allows any one of several roles. Use with constants.MANAGER_ROLES rather
+ * than inlining role lists at call sites.
+ */
+exports.requireAnyRole = (roles) => {
+    return (req, res, next) => {
+        if (!roles.includes(req.user?.role)) {
+            return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+        }
+        next();
+    };
+};
