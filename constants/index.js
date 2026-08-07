@@ -51,12 +51,28 @@ const CREDIT_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'ADJUSTED', 'REJECTED
 const CREDIT_SOURCES = ['SELF', 'COORDINATOR'];
 const CREDIT_TICKET_TYPES = ['KANBAN', 'SUPPORT'];
 
+// ---- Time logging ----
+const TIME_LOG_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'LOCKED'];
+// Past these, an entry is part of a billing record and must not be mutated.
+// Corrections create a new entry pointing at the original via corrects_entry_id.
+const TIME_LOG_IMMUTABLE_STATUSES = ['APPROVED', 'LOCKED'];
+// Allowed transitions. A rejected submission goes back to DRAFT for editing.
+const TIME_LOG_TRANSITIONS = {
+    DRAFT: ['SUBMITTED'],
+    SUBMITTED: ['APPROVED', 'DRAFT'],
+    APPROVED: ['LOCKED', 'DRAFT'],
+    LOCKED: [],
+};
+// Rounding applied at report/invoice time only — never stored.
+const TIME_ROUNDING_MODES = ['EXACT', 'NEAREST_15', 'UP_15', 'UP_PER_DAY_15'];
+
 // ---- Audit log ----
 // Entity types recorded in audit_logs.
 const AUDIT_ENTITY = {
     TICKET: 'TICKET',
     SUPPORT_TICKET: 'SUPPORT_TICKET',
     CREDIT_EVALUATION: 'CREDIT_EVALUATION',
+    TIME_LOG: 'TIME_LOG',
 };
 // Action verbs recorded in audit_logs.
 const AUDIT_ACTION = {
@@ -92,6 +108,10 @@ module.exports = {
     CREDIT_STATUSES,
     CREDIT_SOURCES,
     CREDIT_TICKET_TYPES,
+    TIME_LOG_STATUSES,
+    TIME_LOG_IMMUTABLE_STATUSES,
+    TIME_LOG_TRANSITIONS,
+    TIME_ROUNDING_MODES,
     AUDIT_ENTITY,
     AUDIT_ACTION,
 };

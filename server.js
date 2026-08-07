@@ -34,6 +34,7 @@ app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/my-work', require('./routes/myWorkRoutes'));
 app.use('/api/audit-logs', require('./routes/auditLogRoutes'));
+app.use('/api/time-logs', require('./routes/timeLogRoutes'));
 app.use('/uploads', express.static('uploads'));
 
 app.get('/', (req, res) => {
