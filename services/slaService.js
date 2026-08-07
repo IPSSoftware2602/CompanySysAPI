@@ -166,6 +166,27 @@ function slaStatus(ticket, { targets = DEFAULT_TARGETS, holidays = [], now = new
     };
 }
 
+/**
+ * Has this ticket actually breached, as opposed to merely being warm?
+ *
+ * A paused resolution clock does not count: the ticket is waiting on the
+ * customer, so the time is not ours. First response never pauses, so it always
+ * counts.
+ *
+ * Lives here rather than at each call site because it was duplicated between
+ * the breach cron and the dashboard, and the dashboard's copy silently read an
+ * undefined field — reporting every breach as "at risk". One definition.
+ *
+ * @param {ReturnType<typeof slaStatus>} sla
+ */
+function isBreached(sla) {
+    if (!sla) return false;
+    return Boolean(
+        sla.firstResponse.breached ||
+        (!sla.resolution.isPaused && !sla.resolution.resolvedAt && sla.resolution.breached)
+    );
+}
+
 // ------------------------------------------------------------------ DB ----
 
 let _cache = { holidays: null, targets: null, loadedAt: 0 };
@@ -388,6 +409,7 @@ module.exports = {
     pauseDebitHours,
     consumption,
     slaStatus,
+    isBreached,
     DEFAULT_TARGETS,
     WARN_THRESHOLD_PCT,
     // db

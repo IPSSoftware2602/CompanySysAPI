@@ -7,6 +7,19 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
+
+// Rate limiting buckets by client IP. Behind a reverse proxy (nginx, cPanel,
+// Cloudflare) every request arrives from the proxy's address, so without this
+// the whole team shares one bucket and a single attacker locks everyone out.
+//
+// Defaults to OFF because the opposite mistake is worse: trusting
+// X-Forwarded-For when there is no proxy lets any client forge its own IP and
+// bypass the limit entirely. Production is behind a proxy — set TRUST_PROXY to
+// the number of proxy hops (usually 1).
+if (process.env.TRUST_PROXY) {
+    app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -35,7 +48,18 @@ app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/my-work', require('./routes/myWorkRoutes'));
 app.use('/api/audit-logs', require('./routes/auditLogRoutes'));
 app.use('/api/time-logs', require('./routes/timeLogRoutes'));
-app.use('/uploads', express.static('uploads'));
+app.use('/api/dashboard', require('./routes/dashboardRoutes'));
+// Attachments are served as downloads, never rendered inline. Combined with the
+// extension allowlist in uploadRoutes, this is the second layer stopping an
+// uploaded file from executing as script on our own origin — which, with the
+// JWT in the browser, would be session theft. nosniff stops the browser
+// second-guessing the declared type.
+app.use('/uploads', express.static('uploads', {
+    setHeaders: (res) => {
+        res.setHeader('Content-Disposition', 'attachment');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+}));
 
 app.get('/', (req, res) => {
   res.json({ message: 'IOS Backend System is running', timestamp: new Date() });

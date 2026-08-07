@@ -6,6 +6,7 @@ const {
     pauseDebitHours,
     consumption,
     slaStatus,
+    isBreached,
     DEFAULT_TARGETS,
 } = require('../services/slaService');
 
@@ -227,4 +228,64 @@ test('slaStatus', async (t) => {
         );
         assert.equal(s.resolution.consumedHours, 3);
     });
+});
+
+// ---------------------------------------------------------------- isBreached
+//
+// Regression guard: the dashboard originally read `sla.breached`, which does
+// not exist on the slaStatus result, so every breach was silently downgraded to
+// "at risk". These pin the one definition both the cron and the dashboard use.
+
+test('isBreached: nothing breached is false', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: false },
+        resolution: { breached: false, isPaused: false, resolvedAt: null },
+    }), false);
+});
+
+test('isBreached: a breached first response counts', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: true },
+        resolution: { breached: false, isPaused: false, resolvedAt: null },
+    }), true);
+});
+
+test('isBreached: a breached resolution counts', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: false },
+        resolution: { breached: true, isPaused: false, resolvedAt: null },
+    }), true);
+});
+
+test('isBreached: a paused resolution does NOT count — the time is not ours', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: false },
+        resolution: { breached: true, isPaused: true, resolvedAt: null },
+    }), false);
+});
+
+test('isBreached: first response still counts while paused — it never pauses', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: true },
+        resolution: { breached: true, isPaused: true, resolvedAt: null },
+    }), true);
+});
+
+test('isBreached: an already-resolved ticket is not currently breaching', () => {
+    assert.equal(isBreached({
+        firstResponse: { breached: false },
+        resolution: { breached: true, isPaused: false, resolvedAt: new Date() },
+    }), false);
+});
+
+test('isBreached: returns a boolean, never undefined', () => {
+    const r = isBreached({
+        firstResponse: { breached: undefined },
+        resolution: { breached: undefined, isPaused: false, resolvedAt: null },
+    });
+    assert.equal(typeof r, 'boolean');
+});
+
+test('isBreached: null input is safe', () => {
+    assert.equal(isBreached(null), false);
 });

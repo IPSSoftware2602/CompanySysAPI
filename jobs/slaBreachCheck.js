@@ -99,8 +99,7 @@ async function main() {
 
     for (const entry of candidates) {
         const { ticket, sla } = entry;
-        const breached = sla.firstResponse.breached ||
-            (!sla.resolution.isPaused && sla.resolution.breached);
+        const breached = SlaService.isBreached(sla);
         const action = breached ? AUDIT_ACTION.SLA_BREACH : AUDIT_ACTION.SLA_WARNING;
 
         if (await alreadyNotified(ticket.id, action)) {
