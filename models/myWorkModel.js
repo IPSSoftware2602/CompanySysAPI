@@ -28,6 +28,11 @@ class MyWork {
              LEFT JOIN projects p ON t.project_id = p.id
              WHERE t.deleted_at IS NULL
                AND t.status <> 'DONE'
+               -- owner_user_id is intentionally NOT referenced here. Every owner
+               -- is also a row in ticket_assignments (guaranteed by the migration
+               -- and maintained by Ticket.create/update), so this filter already
+               -- covers them — and keeping post-migration columns out of the main
+               -- query means My Work still works on an un-migrated database.
                AND (ta.user_id = $1 OR t.assigned_to_user_id = $1)`,
             [userId]
         );
@@ -41,6 +46,9 @@ class MyWork {
                     st.status::text       AS status,
                     st.priority::text     AS priority,
                     st.sla_due_at         AS due_date,
+                    -- On support work the assigned dev is the accountable owner;
+                    -- the PM appears as a collaborator.
+                    (st.assigned_dev_id = $1) AS is_owner,
                     st.is_blocked,
                     st.blocked_reason,
                     st.supporting_project_id AS project_id,
@@ -59,6 +67,66 @@ class MyWork {
         );
 
         return [...kanbanRes.rows, ...supportRes.rows];
+    }
+
+    /**
+     * Which of these kanban tickets the user owns, as opposed to collaborates on.
+     *
+     * Separate + fail-soft for the same reason as getSlaContext: owner_user_id
+     * only exists after migrate_tier1_ownership, and My Work must not depend on
+     * migration order to return a result.
+     *
+     * @param {string[]} ticketIds
+     * @param {string} userId
+     * @returns {Promise<Set<string>>} ids the user owns
+     */
+    static async getOwnedTicketIds(ticketIds, userId) {
+        if (!ticketIds.length) return new Set();
+        const { rows } = await db.query(
+            'SELECT id FROM tickets WHERE id = ANY($1::uuid[]) AND owner_user_id = $2',
+            [ticketIds, userId]
+        );
+        return new Set(rows.map((r) => r.id));
+    }
+
+    /**
+     * SLA-bearing columns for a set of support tickets, plus any open pause.
+     *
+     * Deliberately a SEPARATE query rather than extra columns on the support
+     * SELECT above: these columns only exist after migrate_sla_v2, so keeping
+     * them out of the main query means an un-migrated database still gets a
+     * working My Work, just without the SLA signal. The caller treats a throw
+     * here as "no SLA data available".
+     *
+     * @param {string[]} supportTicketIds
+     * @returns {Promise<Map<string, object>>} ticket id -> row
+     */
+    static async getSlaContext(supportTicketIds) {
+        if (!supportTicketIds.length) return new Map();
+
+        const { rows } = await db.query(
+            `SELECT st.id,
+                    st.priority,
+                    st.status,
+                    st.start_date,
+                    st.created_at,
+                    st.actual_end_date,
+                    st.closed_at,
+                    st.first_response_at,
+                    st.first_response_due_at,
+                    st.resolution_due_at,
+                    st.sla_paused_total_minutes,
+                    p.paused_at AS open_paused_at
+             FROM support_tickets st
+             LEFT JOIN LATERAL (
+                 SELECT paused_at FROM sla_pauses
+                 WHERE support_ticket_id = st.id AND resumed_at IS NULL
+                 ORDER BY paused_at DESC LIMIT 1
+             ) p ON TRUE
+             WHERE st.id = ANY($1::uuid[])`,
+            [supportTicketIds]
+        );
+        return new Map(rows.map((r) => [r.id, r]));
     }
 }
 

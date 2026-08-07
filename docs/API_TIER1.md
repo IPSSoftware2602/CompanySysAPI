@@ -35,7 +35,7 @@ into one normalized list, grouped into buckets.
   },
   "buckets": {
     "overdue": [], "due_today": [], "this_week": [],
-    "blocked": [], "awaiting_review": [], "active": []
+    "blocked": [], "awaiting_review": [], "sla_risk": [], "active": []
   }
 }
 ```
@@ -50,10 +50,30 @@ into one normalized list, grouped into buckets.
 | `status` | kanban `ticket_status`, support `support_ticket_status` |
 | `priority` | `P0`–`P3` for support; `null` for kanban |
 | `due_date` | kanban → `end_date`; support → `sla_due_at` |
+| `is_owner` | `true` when the user is the accountable owner, `false` when collaborating. Kanban → `owner_user_id`; support → `assigned_dev_id` (the PM is a collaborator). |
 | `is_blocked`, `blocked_reason` | |
 | `project_id`, `project_name`, `client_name` | |
 | `updated_at` | |
 | `ticket_key`, `linked_ticket_id` | support items only |
+| `sla` | support items only, and only once `migrate_sla_v2` has run — see below |
+
+**`sla` block** (support items only)
+
+| Field | Notes |
+|---|---|
+| `first_response_pct` | % of the first-response target consumed, in business hours |
+| `first_response_due_at` | deadline on the business calendar |
+| `first_response_met` | `true` if answered within target |
+| `resolution_pct` | % of the resolution target consumed, paused time excluded |
+| `resolution_due_at` | deadline, already pushed forward by any completed pauses |
+| `breached` | either clock past 100% |
+| `is_paused` | ticket currently in `WAITING_FOR_CLIENT` |
+
+> **Degrades gracefully.** Ownership and SLA are fetched in separate, fail-soft
+> queries. On a database where `migrate_sla_v2` / `migrate_tier1_ownership` have
+> not run, `/api/my-work` still returns `200` with every bucket — `sla` is simply
+> absent, `is_owner` is `false`, and `sla_risk` is empty. It never 500s on
+> migration order.
 
 **Bucketing rules** — buckets are *independent classifications*, not exclusive.
 One item can appear in several (e.g. blocked **and** overdue). `active` contains
@@ -64,6 +84,9 @@ everything.
 - `this_week` — `due_date` within the next 7 days
 - `blocked` — `is_blocked = true`
 - `awaiting_review` — kanban `CODE_REVIEW`/`QA`; support `TESTING`/`PENDING_DEPLOYMENT`
+- `sla_risk` — support work at ≥80% of either SLA clock and still running. Not
+  the same as `overdue`: this is the bucket you can still *act* on, since
+  `due_date` bucketing only reacts once a ticket is already late.
 - `active` — all non-terminal work
 
 Terminal items are **excluded entirely**: kanban `DONE`, support `COMPLETED`/`CLOSED`,
@@ -331,12 +354,53 @@ enums. Note `schema.sql` is **stale** — do not generate types from it.
 
 ## Deployment
 
+Run migrations **in this order**, then deploy the code:
+
 ```bash
-DB_USER=<user> DB_NAME=ios_db node migrate_tier1.js
+node migrate_tier1.js            # validation / blockers / audit  (first release)
+node migrate_sla_v2.js           # business-hours SLA             (npm run db:migrate:sla)
+node migrate_tier1_ownership.js  # owner_user_id + completion evidence
 ```
 
-Additive and idempotent (`ADD COLUMN IF NOT EXISTS`, no backfill), safe to
-re-run. Rollback is dropping the added columns and the `audit_logs` table.
+All three are additive and idempotent, safe to re-run. Rollback is dropping the
+added columns and tables.
+
+Code deployed *ahead* of the last two migrations still works — My Work and the
+support endpoints degrade rather than fail — but SLA deadlines will not be
+computed until `migrate_sla_v2` has run, so run them first.
+
+### SLA operations
+
+Breach detection is a cron job, not an in-process timer:
+
+```bash
+*/10 * * * * cd /path/to/backend && /usr/bin/node jobs/slaBreachCheck.js >> logs/sla.log 2>&1
+```
+
+Alerts fire once at ≥80% and once on breach, de-duplicated through `audit_logs`
+(`SLA_WARNING` / `SLA_BREACH`). Delivery is a single seam: set `SLA_ALERT_WEBHOOK`
+in `.env`, or replace `notify()` in that file with an Xchievers WhatsApp call.
+Without it the job logs what it *would* have sent. Dry run with
+`npm run sla:check:dry`.
+
+> **Holiday calendar is incomplete by design.** `data/holidays.js` seeds only
+> fixed-date Malaysian holidays. The lunar and Islamic holidays move annually and
+> were deliberately not guessed — a wrong holiday date silently corrupts every
+> deadline spanning it. Until they are filled in from the JPM gazette those days
+> count as normal working days. The migration prints exactly which are missing.
+
+### Changed columns
+
+| Table | Added |
+|---|---|
+| `support_tickets` | `first_response_due_at`, `resolution_due_at`, `sla_paused_total_minutes` |
+| `comments` | `is_internal` — **defaults `true`**; a comment must be explicitly marked public to be customer-visible, and only a public one stamps `first_response_at` |
+| `tickets` | `owner_user_id`, `completion_explanation`, `pull_request_url`, `test_evidence` |
+| new tables | `public_holidays`, `sla_targets`, `sla_pauses` |
+
+`tickets.assigned_to_user_id` is **deprecated**. `owner_user_id` is authoritative;
+writes keep both in sync so existing clients keep working. Do not add new reads
+of `assigned_to_user_id` — it is slated for removal once nothing references it.
 
 **`JWT_SECRET` is now mandatory.** The application refuses to start if it is
 unset, or if it is still the old hardcoded `super_secret_key_change_me` value.
