@@ -2,30 +2,26 @@ const SupportTicket = require('../models/supportTicketModel');
 const Ticket = require('../models/ticketModel');
 const db = require('../db');
 const AuditService = require('../services/auditService');
+const SlaService = require('../services/slaService');
 const { AUDIT_ACTION, AUDIT_ENTITY, SUPPORT_TO_TICKET_TYPE } = require('../constants');
 
-// Helper for SLA Calculation
-// Helper for SLA Calculation
-function calculateSLA(priority, startDate) {
-    const start = startDate ? new Date(startDate) : new Date();
-    // Simplified logic: P0=2h, P1=24h, P2=5d, P3=14d
-    // TODO: Implement business hours logic
-    switch (priority) {
-        case 'P0':
-            return new Date(start.getTime() + 2 * 60 * 60 * 1000); // 2 hours
-        case 'P1':
-            return new Date(start.getTime() + 24 * 60 * 60 * 1000); // 24 hours
-        case 'P2':
-            const p2Date = new Date(start);
-            p2Date.setDate(p2Date.getDate() + 5);
-            return p2Date;
-        case 'P3':
-            const p3Date = new Date(start);
-            p3Date.setDate(p3Date.getDate() + 14);
-            return p3Date;
-        default:
-            return null;
-    }
+// The status that stops the resolution clock. Entering it opens an sla_pause;
+// leaving it closes the pause and pushes resolution_due_at forward.
+const PAUSED_STATUS = 'WAITING_FOR_CLIENT';
+
+/**
+ * Business-hours SLA deadlines for a ticket.
+ * Replaces the old wall-clock calculateSLA(), which gave a P0 raised at 17:30
+ * on a Friday a deadline of 19:30 that same evening.
+ */
+async function deadlinesFor(priority, startDate, client) {
+    const { holidays, targets } = await SlaService.loadCalendar(client);
+    return SlaService.computeDeadlines({
+        priority,
+        startAt: startDate || new Date(),
+        targets,
+        holidays,
+    });
 }
 
 exports.createTicket = async (req, res) => {
@@ -59,8 +55,8 @@ exports.createTicket = async (req, res) => {
         }
         const ticket_key = `${prefix}-${String(sequence).padStart(4, '0')}`;
 
-        // 2. Calculate SLA
-        const sla_due_at = calculateSLA(priority, start_date);
+        // 2. Calculate SLA deadlines on the business calendar
+        const { first_response_due_at, resolution_due_at } = await deadlinesFor(priority, start_date);
 
         // 3. Create Ticket
         const ticket = await SupportTicket.create({
@@ -72,11 +68,13 @@ exports.createTicket = async (req, res) => {
             title,
             description,
             steps_to_reproduce,
-            description,
-            steps_to_reproduce,
             attachments,
             start_date,
-            sla_due_at,
+            // sla_due_at is kept in step with resolution_due_at so existing
+            // callers and dashboards reading the old column stay correct.
+            sla_due_at: resolution_due_at,
+            first_response_due_at,
+            resolution_due_at,
             created_by_user_id: req.user?.id, // Assuming auth middleware
             assigned_pm_id,
             assigned_dev_id
@@ -91,52 +89,85 @@ exports.createTicket = async (req, res) => {
 };
 
 exports.transitionTicket = async (req, res) => {
-    // Similar to existing transition but simpler initially (just status update)
     const { id } = req.params;
-    const { status, reason, start_date, actual_end_date, priority } = req.body; // Allow updating dates/priority here too?
+    const { status, reason, start_date, actual_end_date, priority } = req.body;
 
-    console.log('Support Ticket Transition:', { id, status, reason });
-
+    // Status change, transition log and SLA pause/resume all move together or
+    // not at all. The transition insert used to be a swallowing try/catch —
+    // acceptable for a log line, not for a pause record the resolution clock
+    // is computed from.
+    const client = await db.pool.connect();
     try {
         const ticket = await SupportTicket.getById(id);
-        if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+        if (!ticket) {
+            client.release();
+            return res.status(404).json({ error: 'Ticket not found' });
+        }
 
-        console.log('Current ticket status:', ticket.status, '-> New status:', status);
+        await client.query('BEGIN');
 
         const updateData = {};
         if (status) updateData.status = status;
         if (actual_end_date) updateData.actual_end_date = actual_end_date;
 
-        // If start_date changes, recalculate SLA
-        // Also if priority changes (not in req.body usually for transition, but if edited, handled elsewhere? 
-        // Let's assume this endpoint might handle edits too or we create a separate update endpoint. 
-        // For now, let's assume this handles Updates + Transitions.
-        let newSla = null;
+        // Recompute both deadlines if the clock's starting point moves.
         if (start_date && start_date !== ticket.start_date) {
             updateData.start_date = start_date;
-            newSla = calculateSLA(priority || ticket.priority, start_date);
-            updateData.sla_due_at = newSla;
         }
 
         if (status === 'CLOSED' && !ticket.closed_at) {
             updateData.closed_at = new Date().toISOString();
         }
 
-        console.log('Update data:', updateData);
-        const updatedTicket = await SupportTicket.update(id, updateData);
-        console.log('Updated ticket:', updatedTicket?.status);
+        const updatedTicket = Object.keys(updateData).length
+            ? await SupportTicket.update(id, updateData, client)
+            : ticket;
 
-        // Log transition ONLY if status changed (wrap in try-catch to not fail the main operation)
-        if (status && status !== ticket.status) {
-            try {
-                await db.query(
-                    'INSERT INTO support_ticket_transitions (support_ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
-                    [id, ticket.status, status, req.user?.id, reason]
+        const statusChanged = Boolean(status) && status !== ticket.status;
+
+        if (statusChanged) {
+            await client.query(
+                'INSERT INTO support_ticket_transitions (support_ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
+                [id, ticket.status, status, req.user?.id, reason]
+            );
+
+            // --- SLA pause / resume ---
+            // Resuming BEFORE any deadline recalculation below, so the paused
+            // time is banked against the deadline it actually accrued under.
+            const wasPaused = ticket.status === PAUSED_STATUS;
+            const nowPaused = status === PAUSED_STATUS;
+
+            if (!wasPaused && nowPaused) {
+                await SlaService.pause(
+                    id,
+                    { reason: reason || 'Waiting for client', userId: req.user?.id },
+                    client
                 );
-            } catch (logErr) {
-                console.log('Transition log failed (non-critical):', logErr.message);
+            } else if (wasPaused && !nowPaused) {
+                await SlaService.resume(id, {}, client);
             }
+        }
 
+        // A moved start_date or changed priority invalidates both deadlines.
+        // Done last so it overwrites anything resume() just wrote.
+        const priorityChanged = Boolean(priority) && priority !== ticket.priority;
+        const startMoved = Boolean(start_date) && start_date !== ticket.start_date;
+        if (priorityChanged || startMoved) {
+            await SlaService.applyDeadlines(
+                id,
+                {
+                    priority: priority || ticket.priority,
+                    startAt: start_date || ticket.start_date || ticket.created_at,
+                },
+                client
+            );
+        }
+
+        await client.query('COMMIT');
+
+        if (statusChanged) {
+            // Outside the transaction: an audit write must never roll back the
+            // user's action (AuditService already swallows its own failures).
             await AuditService.record(req, {
                 action: AUDIT_ACTION.STATUS_CHANGE,
                 entity_type: AUDIT_ENTITY.SUPPORT_TICKET,
@@ -147,11 +178,16 @@ exports.transitionTicket = async (req, res) => {
             });
         }
 
-        res.json(updatedTicket);
+        // Re-read so the response carries the deadlines slaService just wrote.
+        const fresh = await SupportTicket.getById(id);
+        res.json(fresh || updatedTicket);
 
     } catch (err) {
+        try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
         console.error('Transition error:', err);
         res.status(500).json({ error: 'Failed to transition ticket' });
+    } finally {
+        client.release();
     }
 };
 
@@ -176,17 +212,25 @@ exports.updateTicket = async (req, res) => {
             updateData.attachments = JSON.stringify(req.body.attachments);
         }
 
-        // Recalculate SLA if priority changes
-        if (priority && priority !== ticket.priority) {
-            const newSla = calculateSLA(priority, ticket.start_date);
-            updateData.sla_due_at = newSla;
+        const updatedTicket = Object.keys(updateData).length
+            ? await SupportTicket.update(id, updateData)
+            : ticket;
+
+        // Recompute both deadlines when the priority or the clock's start moves.
+        // Done after the update so it reads the ticket's new values.
+        const priorityChanged = priority !== undefined && priority !== ticket.priority;
+        const startMoved = start_date !== undefined && start_date !== ticket.start_date;
+        if (priorityChanged || startMoved) {
+            await SlaService.applyDeadlines(id, {
+                priority: priority || ticket.priority,
+                startAt: start_date || ticket.start_date || ticket.created_at,
+            });
+            return res.json(await SupportTicket.getById(id));
         }
 
-        const updatedTicket = await SupportTicket.update(id, updateData);
         res.json(updatedTicket);
     } catch (err) {
-        console.error('Error in updateTicket:', err); // Debug Log
-        console.error('Update Data was:', updateData); // Debug Log
+        console.error('Error in updateTicket:', err);
         res.status(500).json({ error: 'Failed to update ticket', details: err.message });
     }
 };

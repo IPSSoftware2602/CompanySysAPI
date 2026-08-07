@@ -9,7 +9,11 @@
     "db:migrate": "node migrate_all.js",
     "db:seed": "node seed_all.js",
     "db:reset": "node reset_db.js && npm run db:migrate && npm run db:seed",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "db:migrate:sla": "node migrate_sla_v2.js",
+    "sla:check": "node jobs/slaBreachCheck.js",
+    "sla:check:dry": "node jobs/slaBreachCheck.js --dry-run",
+    "test": "node --test test/*.test.js",
+    "test:watch": "node --test --watch test/*.test.js"
   },
   "keywords": [],
   "author": "",

@@ -70,6 +70,10 @@ const AUDIT_ACTION = {
     LINK: 'LINK',
     LOCK: 'LOCK',
     RESTORE: 'RESTORE',
+    // Emitted by jobs/slaBreachCheck.js. Doubles as the de-duplication key:
+    // one warning and one breach notification per ticket, ever.
+    SLA_WARNING: 'SLA_WARNING',
+    SLA_BREACH: 'SLA_BREACH',
 };
 
 module.exports = {

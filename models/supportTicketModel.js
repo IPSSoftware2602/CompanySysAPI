@@ -14,6 +14,8 @@ class SupportTicket {
         attachments,
         start_date,
         sla_due_at,
+        first_response_due_at,
+        resolution_due_at,
         created_by_user_id,
         assigned_pm_id,
         assigned_dev_id
@@ -22,13 +24,15 @@ class SupportTicket {
             `INSERT INTO support_tickets (
                 supporting_project_id, ticket_key, request_type, priority, risk_level, status,
                 title, description, steps_to_reproduce, attachments, start_date, sla_due_at,
+                first_response_due_at, resolution_due_at,
                 created_by_user_id, assigned_pm_id, assigned_dev_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *`,
             [
                 supporting_project_id, ticket_key, request_type, priority, risk_level, status || 'NEW',
                 title, description, steps_to_reproduce, JSON.stringify(attachments || []),
                 start_date || new Date(), sla_due_at,
+                first_response_due_at, resolution_due_at,
                 created_by_user_id, assigned_pm_id, assigned_dev_id
             ]
         );
@@ -61,7 +65,17 @@ class SupportTicket {
         return result.rows[0];
     }
 
-    static async update(id, updates) {
+    /**
+     * @param {string} id
+     * @param {object} updates - only `allowed` keys are applied
+     * @param {object} [client=db] - pass a pg client to run inside a transaction
+     *
+     * NOTE: first_response_due_at / resolution_due_at / first_response_at /
+     * sla_paused_total_minutes are deliberately NOT in `allowed`. They are
+     * server-computed and written only by slaService, so a client cannot PATCH
+     * itself a more generous deadline.
+     */
+    static async update(id, updates, client = db) {
         const allowed = [
             'supporting_project_id', 'request_type', 'priority', 'risk_level', 'status',
             'title', 'description', 'steps_to_reproduce', 'attachments',
@@ -84,10 +98,8 @@ class SupportTicket {
 
         values.push(id);
         const queryText = `UPDATE support_tickets SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${idx} RETURNING *`;
-        console.log('Executing Query:', queryText);
-        console.log('Values:', values);
 
-        const result = await db.query(queryText, values);
+        const result = await client.query(queryText, values);
         return result.rows[0];
     }
 

@@ -1,11 +1,18 @@
 const db = require('../db');
 
 class Comment {
-    static async create({ ticket_id, support_ticket_id, user_id, content }) {
-        const result = await db.query(
-            `INSERT INTO comments (ticket_id, support_ticket_id, user_id, content) 
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-            [ticket_id || null, support_ticket_id || null, user_id, content]
+    /**
+     * @param {object} data
+     * @param {boolean} [data.is_internal=true] - internal notes are the default.
+     *   Making a comment customer-visible must be a deliberate act: it is what
+     *   stamps first_response_at and what a customer would eventually read.
+     * @param {object} [client=db] - pass a pg client to run inside a transaction
+     */
+    static async create({ ticket_id, support_ticket_id, user_id, content, is_internal = true }, client = db) {
+        const result = await client.query(
+            `INSERT INTO comments (ticket_id, support_ticket_id, user_id, content, is_internal)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [ticket_id || null, support_ticket_id || null, user_id, content, is_internal !== false]
         );
         return result.rows[0];
     }

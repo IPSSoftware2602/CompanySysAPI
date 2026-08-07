@@ -1,12 +1,57 @@
 const Comment = require('../models/commentModel');
+const db = require('../db');
+const SlaService = require('../services/slaService');
 
 exports.createComment = async (req, res) => {
+    const { ticket_id, support_ticket_id, content, is_internal } = req.body;
+
+    if (!content || !String(content).trim()) {
+        return res.status(400).json({ error: 'content is required' });
+    }
+    if (!ticket_id && !support_ticket_id) {
+        return res.status(400).json({ error: 'ticket_id or support_ticket_id is required' });
+    }
+
+    const client = await db.pool.connect();
     try {
-        const comment = await Comment.create(req.body);
-        res.status(201).json(comment);
+        await client.query('BEGIN');
+
+        const comment = await Comment.create(
+            {
+                ticket_id,
+                support_ticket_id,
+                // Author is the authenticated user, never whatever the body claims —
+                // req.body.user_id used to be passed straight through, which let a
+                // caller post a comment under someone else's name.
+                user_id: req.user.id,
+                content,
+                is_internal,
+            },
+            client
+        );
+
+        // A customer-visible reply on a support ticket stops the first-response
+        // clock. Any internal user counts: support tickets here are logged BY
+        // staff on the customer's behalf, so the ticket's creator is usually the
+        // same person who answers — excluding them would never stamp anything.
+        // recordFirstResponse is idempotent, so later replies are no-ops.
+        let firstResponseRecorded = false;
+        if (support_ticket_id && comment.is_internal === false) {
+            firstResponseRecorded = await SlaService.recordFirstResponse(
+                support_ticket_id,
+                comment.created_at,
+                client
+            );
+        }
+
+        await client.query('COMMIT');
+        res.status(201).json({ ...comment, first_response_recorded: firstResponseRecorded });
     } catch (err) {
-        console.error(err);
+        try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+        console.error('Failed to create comment:', err);
         res.status(500).json({ error: 'Failed to create comment' });
+    } finally {
+        client.release();
     }
 };
 
