@@ -185,6 +185,21 @@ async function migrate() {
         for (const h of missing) console.log(`     - ${h.name}`);
         console.log('\n   Source: https://www.malaysia.gov.my/portal/content/30736\n');
     }
+
+    const substitutes = holidayData.unconfirmedSubstitutes();
+    if (substitutes.length) {
+        console.log(
+            `\nℹ️  ${substitutes.length} rest-day substitute(s) NOT seeded — company policy, not gazetted.\n` +
+            '   Under the Employment Act 1955 a holiday falling on a rest day is\n' +
+            '   substituted by the next working day. These are the 2026 cases:\n'
+        );
+        for (const h of substitutes) console.log(`     - ${h.holiday_date}  ${h.name}`);
+        console.log(
+            '\n   If IPS observes these, move them into VARIABLE_2026 in\n' +
+            '   backend/data/holidays.js and re-run. Until then they count as\n' +
+            '   ordinary working days.\n'
+        );
+    }
 }
 
 migrate()
