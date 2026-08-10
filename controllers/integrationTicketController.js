@@ -350,6 +350,113 @@ exports.cancel = async (req, res) => {
     }
 };
 
+/** GET /api/integration/v1/tickets/:ticket_key */
+exports.get = async (req, res) => {
+    try {
+        const { rows } = await db.query(
+            'SELECT id FROM support_tickets WHERE ticket_key = $1 AND deleted_at IS NULL',
+            [req.params.ticket_key]
+        );
+        if (!rows.length) return res.status(404).json({ error: 'Ticket not found' });
+        res.json(present(await SupportTicket.getById(rows[0].id)));
+    } catch (err) {
+        console.error('[integration] get failed:', err);
+        res.status(500).json({ error: 'Failed to read ticket' });
+    }
+};
+
+/** Results are always bounded — an unbounded scan is a denial of service. */
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+/**
+ * GET /api/integration/v1/tickets
+ *
+ * Three jobs, one endpoint:
+ *   ?since=<iso>          reconciliation — what changed while we were down
+ *   ?search=&company_code= dedup — has this been reported already?
+ *   ?status=&external_ref= plain lookup
+ *
+ * The `since` poll is the safety net behind the status webhook. Webhook
+ * delivery is best-effort even with retries; this is how the workflow catches
+ * up after an outage without anyone noticing a customer was never told.
+ */
+exports.list = async (req, res) => {
+    try {
+        const { since, search, company_code, status, external_ref } = req.query;
+
+        const limit = Math.min(
+            Math.max(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, 1),
+            MAX_LIMIT
+        );
+
+        const where = ['st.deleted_at IS NULL'];
+        const values = [];
+        let i = 1;
+
+        if (since) {
+            const d = new Date(since);
+            if (Number.isNaN(d.getTime())) {
+                return res.status(400).json({ error: 'since must be an ISO 8601 timestamp' });
+            }
+            // Inclusive: a caller polling from the last timestamp it saw must
+            // not miss a row written in the same millisecond. It may see a
+            // repeat instead, which is the safe direction — the contract is
+            // at-least-once, same as the webhook.
+            where.push(`st.updated_at >= $${i++}`);
+            values.push(d.toISOString());
+        }
+        if (status) { where.push(`st.status = $${i++}`); values.push(status); }
+        if (external_ref) { where.push(`st.external_ref = $${i++}`); values.push(external_ref); }
+        if (company_code) {
+            where.push(`co.account_code = $${i++}`);
+            values.push(company_code);
+        }
+        if (search) {
+            // Bounded ILIKE over title and description. Fine at this volume;
+            // revisit with a tsvector index if support traffic ever grows.
+            where.push(`(st.title ILIKE $${i} OR st.description ILIKE $${i})`);
+            values.push(`%${String(search).slice(0, 100)}%`);
+            i++;
+        }
+
+        values.push(limit);
+
+        const { rows } = await db.query(
+            `SELECT st.*,
+                    COALESCE(p.name, sp.name) AS project_name,
+                    COALESCE(stco.name, co.name, p.client_name) AS client_name
+             FROM support_tickets st
+             LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
+             LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+             LEFT JOIN companies co ON co.id = COALESCE(st.company_id, p.company_id)
+             LEFT JOIN companies stco ON stco.id = st.company_id
+             WHERE ${where.join(' AND ')}
+             ORDER BY st.updated_at ASC, st.id ASC
+             LIMIT $${i}`,
+            values
+        );
+
+        const tickets = rows.map(present);
+
+        // Where to resume from. Ties on updated_at may repeat on the next poll;
+        // the caller dedupes by ticket_key.
+        const nextSince = rows.length ? rows[rows.length - 1].updated_at : since || null;
+
+        res.json({
+            count: tickets.length,
+            limit,
+            // Tells the caller there is more to fetch before it is caught up.
+            has_more: rows.length === limit,
+            next_since: nextSince,
+            tickets,
+        });
+    } catch (err) {
+        console.error('[integration] list failed:', err);
+        res.status(500).json({ error: 'Failed to list tickets' });
+    }
+};
+
 /**
  * POST /api/integration/v1/tickets/:ticket_key/notes
  * Always internal. Nothing from this API is customer-visible, because

@@ -33,6 +33,11 @@ const writeLimiter = rateLimit({
 
 router.use(authenticateApiKey);
 
+// Reads are separately scoped, so a write-only key cannot enumerate tickets.
+// Listed before /tickets/:ticket_key so neither shadows the other.
+router.get('/tickets', requireScope('tickets:read'), ctl.list);
+router.get('/tickets/:ticket_key', requireScope('tickets:read'), ctl.get);
+
 router.post('/tickets', writeLimiter, requireScope('tickets:write'), ctl.submit);
 router.patch('/tickets/:ticket_key', writeLimiter, requireScope('tickets:write'), ctl.update);
 router.post('/tickets/:ticket_key/cancel', writeLimiter, requireScope('tickets:write'), ctl.cancel);
