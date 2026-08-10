@@ -20,7 +20,45 @@ if (process.env.TRUST_PROXY) {
     app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
 }
 
-app.use(cors());
+/**
+ * CORS was previously wide open — any site the team visited could call this API
+ * with their browser's credentials. Locked to the app's own origins.
+ *
+ * Production is https://task.ips.com.my. Local Vite dev servers are included so
+ * developers are not forced to edit this file; add more via CORS_ORIGINS
+ * (comma-separated) rather than reopening it.
+ */
+const DEFAULT_ORIGINS = [
+    'https://task.ips.com.my',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+];
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .concat(DEFAULT_ORIGINS);
+
+app.use(cors({
+    origin(origin, cb) {
+        // No Origin header: curl, server-to-server, same-origin navigation and
+        // the /uploads links. Not a browser cross-origin request, so allow it —
+        // CORS is not what protects those; authentication is.
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.includes(origin)) return cb(null, true);
+
+        // Refuse by withholding the header rather than throwing. Throwing
+        // surfaces as a 500 and buries real faults in the logs; without the
+        // header the browser blocks the response either way, and the preflight
+        // for our Authorization header fails, so no authenticated cross-origin
+        // call can complete.
+        console.warn(`[cors] blocked origin: ${origin}`);
+        cb(null, false);
+    },
+    credentials: true,
+}));
+
 app.use(express.json());
 
 // Routes
