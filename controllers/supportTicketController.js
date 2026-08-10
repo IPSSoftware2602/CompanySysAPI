@@ -235,6 +235,54 @@ exports.updateTicket = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/support-tickets/:id/sla
+ *
+ * Computed SLA state for one ticket: both clocks, consumption, paused time and
+ * whether it has actually breached. Kept separate from the ticket payload
+ * because it is derived at read time from the business calendar, not stored —
+ * and because the columns it needs only exist after migrate_sla_v2.
+ */
+exports.getSlaStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const ticket = await SupportTicket.getById(id);
+        if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+        const { rows: [openPause] } = await db.query(
+            `SELECT paused_at, reason FROM sla_pauses
+             WHERE support_ticket_id = $1 AND resumed_at IS NULL
+             ORDER BY paused_at DESC LIMIT 1`,
+            [id]
+        );
+
+        const { holidays, targets } = await SlaService.loadCalendar();
+        const sla = SlaService.slaStatus(ticket, { holidays, targets, openPause });
+
+        const { rows: pauses } = await db.query(
+            `SELECT paused_at, resumed_at, reason FROM sla_pauses
+             WHERE support_ticket_id = $1 ORDER BY paused_at`,
+            [id]
+        );
+
+        res.json({
+            ...sla,
+            breached: SlaService.isBreached(sla),
+            target: targets[ticket.priority] || null,
+            pauses,
+        });
+    } catch (err) {
+        // The SLA tables may not exist yet on an un-migrated database. That is
+        // a missing feature, not a server fault — say so plainly so the UI can
+        // hide the panel instead of showing an error.
+        if (err.code === '42P01' || err.code === '42703') {
+            return res.status(501).json({ error: 'SLA tracking is not enabled on this database' });
+        }
+        console.error('SLA status error:', err);
+        res.status(500).json({ error: 'Failed to compute SLA status', details: err.message });
+    }
+};
+
 exports.getBoardTickets = async (req, res) => {
     try {
         // Fetch all support tickets, ordered by created_at DESC or updated_at

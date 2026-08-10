@@ -12,6 +12,7 @@ router.put('/:id', authenticateToken, v.updateTicket, validate, supportTicketCon
 router.delete('/:id', authenticateToken, v.idParam, validate, supportTicketController.deleteSupportTicket);
 router.post('/:id/restore', authenticateToken, requireAnyRole(MANAGER_ROLES), v.idParam, validate, supportTicketController.restoreSupportTicket);
 router.get('/board', authenticateToken, supportTicketController.getBoardTickets);
+router.get('/:id/sla', authenticateToken, v.idParam, validate, supportTicketController.getSlaStatus);
 router.post('/:id/block', authenticateToken, v.blockTicket, validate, supportTicketController.blockSupportTicket);
 router.post('/:id/unblock', authenticateToken, v.idParam, validate, supportTicketController.unblockSupportTicket);
 router.post('/:id/convert', authenticateToken, v.convertToTicket, validate, supportTicketController.convertToTicket);
