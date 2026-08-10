@@ -23,8 +23,8 @@ class SupportTicket {
         created_by_user_id,
         assigned_pm_id,
         assigned_dev_id
-    }) {
-        const result = await db.query(
+    }, client = db) {
+        const result = await client.query(
             `INSERT INTO support_tickets (
                 supporting_project_id, project_id, company_id,
                 ticket_key, request_type, priority, risk_level, status,
@@ -45,6 +45,34 @@ class SupportTicket {
         return result.rows[0];
     }
 
+    /**
+     * Allocates the next ticket key for a month prefix, atomically.
+     *
+     * One statement: concurrent callers serialise on the counter row rather
+     * than racing a read-then-write. Replaces getLatestKey() + 1, which two
+     * simultaneous creates could both resolve to the same number.
+     *
+     * Pass the transaction's client so the allocation commits or rolls back
+     * with the ticket it belongs to — otherwise a failed insert burns a number.
+     *
+     * @param {string} prefix e.g. "SC-202608"
+     * @param {object} [client=db]
+     * @returns {Promise<string>} e.g. "SC-202608-0008"
+     */
+    static async nextTicketKey(prefix, client = db) {
+        const { rows } = await client.query(
+            `INSERT INTO ticket_sequences (prefix, last_value)
+             VALUES ($1, 1)
+             ON CONFLICT (prefix) DO UPDATE
+                 SET last_value = ticket_sequences.last_value + 1,
+                     updated_at = CURRENT_TIMESTAMP
+             RETURNING last_value`,
+            [prefix]
+        );
+        return `${prefix}-${String(rows[0].last_value).padStart(4, '0')}`;
+    }
+
+    /** @deprecated Racy. Use nextTicketKey(). Retained for the migration only. */
     static async getLatestKey(prefix) {
         const result = await db.query(
             `SELECT ticket_key FROM support_tickets WHERE ticket_key LIKE $1 ORDER BY ticket_key DESC LIMIT 1`,

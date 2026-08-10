@@ -25,6 +25,10 @@ async function deadlinesFor(priority, startDate, client) {
 }
 
 exports.createTicket = async (req, res) => {
+    // Key allocation and the insert share a transaction: a failed insert rolls
+    // the counter back rather than burning a number, and two concurrent callers
+    // serialise on the counter row instead of racing.
+    const client = await db.pool.connect();
     try {
         const {
             supporting_project_id,
@@ -40,23 +44,18 @@ exports.createTicket = async (req, res) => {
             start_date // Optional
         } = req.body;
 
-        // 1. Generate ID SC-YYYYMM-XXXX
+        await client.query('BEGIN');
+
+        // 1. Allocate ID SC-YYYYMM-XXXX atomically
         const dateObj = new Date();
         const yyyy = dateObj.getFullYear();
         const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
         const prefix = `SC-${yyyy}${mm}`;
 
-        const latestKey = await SupportTicket.getLatestKey(prefix);
-        let sequence = 1;
-        if (latestKey) {
-            const parts = latestKey.split('-');
-            const lastNum = parseInt(parts[2], 10);
-            if (!isNaN(lastNum)) sequence = lastNum + 1;
-        }
-        const ticket_key = `${prefix}-${String(sequence).padStart(4, '0')}`;
+        const ticket_key = await SupportTicket.nextTicketKey(prefix, client);
 
         // 2. Calculate SLA deadlines on the business calendar
-        const { first_response_due_at, resolution_due_at } = await deadlinesFor(priority, start_date);
+        const { first_response_due_at, resolution_due_at } = await deadlinesFor(priority, start_date, client);
 
         // 2b. Resolve project and company.
         //
@@ -66,12 +65,12 @@ exports.createTicket = async (req, res) => {
         // attribution survives a project being reassigned later.
         const projectId = req.body.project_id
             || (supporting_project_id
-                ? (await db.query('SELECT project_id FROM supporting_projects WHERE id = $1', [supporting_project_id])).rows[0]?.project_id
+                ? (await client.query('SELECT project_id FROM supporting_projects WHERE id = $1', [supporting_project_id])).rows[0]?.project_id
                 : null);
 
         const companyId = req.body.company_id
             || (projectId
-                ? (await db.query('SELECT company_id FROM projects WHERE id = $1', [projectId])).rows[0]?.company_id
+                ? (await client.query('SELECT company_id FROM projects WHERE id = $1', [projectId])).rows[0]?.company_id
                 : null);
 
         // 3. Create Ticket
@@ -96,13 +95,18 @@ exports.createTicket = async (req, res) => {
             created_by_user_id: req.user?.id, // Assuming auth middleware
             assigned_pm_id,
             assigned_dev_id
-        });
+        }, client);
+
+        await client.query('COMMIT');
 
         res.status(201).json(ticket);
 
     } catch (err) {
-        console.error(err);
+        try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+        console.error('Create support ticket error:', err);
         res.status(500).json({ error: 'Failed to create support ticket' });
+    } finally {
+        client.release();
     }
 };
 
