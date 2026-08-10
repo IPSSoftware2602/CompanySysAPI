@@ -13,7 +13,11 @@
     "sla:check": "node jobs/slaBreachCheck.js",
     "sla:check:dry": "node jobs/slaBreachCheck.js --dry-run",
     "test": "node --test test/*.test.js",
-    "test:watch": "node --test --watch test/*.test.js"
+    "test:watch": "node --test --watch test/*.test.js",
+    "db:migrate:apikeys": "node migrate_api_keys.js",
+    "apikey:create": "node scripts/apiKey.js create",
+    "apikey:list": "node scripts/apiKey.js list",
+    "apikey:revoke": "node scripts/apiKey.js revoke"
   },
   "keywords": [],
   "author": "",

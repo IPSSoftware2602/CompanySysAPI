@@ -6,13 +6,20 @@ class AuditLog {
      * the write in an existing transaction; otherwise it uses the pool.
      */
     static async create(
-        { user_id, action, entity_type, entity_id, before_data, after_data, reason, ip_address, user_agent },
+        {
+            user_id, action, entity_type, entity_id, before_data, after_data, reason,
+            ip_address, user_agent,
+            // Defaults keep existing callers working unchanged; AuditService
+            // supplies these explicitly.
+            actor_type = 'USER', api_key_id = null,
+        },
         client = db
     ) {
         const result = await client.query(
             `INSERT INTO audit_logs
-                (user_id, action, entity_type, entity_id, before_data, after_data, reason, ip_address, user_agent)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                (user_id, action, entity_type, entity_id, before_data, after_data, reason, ip_address, user_agent,
+                 actor_type, api_key_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING *`,
             [
                 user_id || null,
@@ -24,6 +31,8 @@ class AuditLog {
                 reason || null,
                 ip_address || null,
                 user_agent || null,
+                actor_type,
+                api_key_id,
             ]
         );
         return result.rows[0];
