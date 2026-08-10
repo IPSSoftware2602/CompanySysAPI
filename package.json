@@ -17,7 +17,10 @@
     "db:migrate:apikeys": "node migrate_api_keys.js",
     "apikey:create": "node scripts/apiKey.js create",
     "apikey:list": "node scripts/apiKey.js list",
-    "apikey:revoke": "node scripts/apiKey.js revoke"
+    "apikey:revoke": "node scripts/apiKey.js revoke",
+    "db:migrate:webhooks": "node migrate_webhooks.js",
+    "webhook:send": "node jobs/webhookSender.js",
+    "webhook:send:dry": "node jobs/webhookSender.js --dry-run"
   },
   "keywords": [],
   "author": "",

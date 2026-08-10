@@ -3,6 +3,7 @@ const SupportTicket = require('../models/supportTicketModel');
 const SlaService = require('../services/slaService');
 const AuditService = require('../services/auditService');
 const Idempotency = require('../services/idempotencyService');
+const Webhook = require('../services/webhookService');
 const { AUDIT_ACTION, AUDIT_ENTITY, SUPPORT_PRIORITIES, SUPPORT_REQUEST_TYPES } = require('../constants');
 
 /**
@@ -321,6 +322,15 @@ exports.cancel = async (req, res) => {
                 [ticket.id, reason]
             );
         }
+
+        // Confirms back to the workflow what actually happened — it asked to
+        // cancel, and needs to know whether that took effect or is pending a
+        // human, so it can tell the customer the truth.
+        await Webhook.enqueue({
+            event: direct ? Webhook.EVENTS.CANCELLED : Webhook.EVENTS.CANCELLATION_REQUESTED,
+            ticket: { ...ticket, status: direct ? 'CANCELLED' : ticket.status },
+            extra: { reason, cancelled: direct },
+        }, client);
 
         await client.query('COMMIT');
 

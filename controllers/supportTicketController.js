@@ -3,6 +3,7 @@ const Ticket = require('../models/ticketModel');
 const db = require('../db');
 const AuditService = require('../services/auditService');
 const SlaService = require('../services/slaService');
+const Webhook = require('../services/webhookService');
 const { AUDIT_ACTION, AUDIT_ENTITY, SUPPORT_TO_TICKET_TYPE } = require('../constants');
 
 // The status that stops the resolution clock. Entering it opens an sla_pause;
@@ -167,6 +168,16 @@ exports.transitionTicket = async (req, res) => {
             } else if (wasPaused && !nowPaused) {
                 await SlaService.resume(id, {}, client);
             }
+
+            // Transactional outbox: queued on the SAME client as the status
+            // change, so the event cannot exist without the change it describes
+            // (or vice versa). No-ops for tickets a human filed — nobody is
+            // waiting on WhatsApp for those.
+            await Webhook.enqueue({
+                event: Webhook.EVENTS.STATUS_CHANGED,
+                ticket: { ...ticket, status },
+                extra: { from: ticket.status, to: status, reason: reason || null },
+            }, client);
         }
 
         // A moved start_date or changed priority invalidates both deadlines.
