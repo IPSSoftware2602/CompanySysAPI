@@ -29,10 +29,12 @@ const SUPPORT_PRIORITIES = ['P0', 'P1', 'P2', 'P3'];
 const SUPPORT_REQUEST_TYPES = ['BUG', 'AMENDMENT', 'CHANGE_REQUEST', 'FEATURE', 'QUESTION', 'DATA_ISSUE'];
 const SUPPORT_STATUSES = [
     'NEW', 'TRIAGING', 'DOING', 'WAITING_FOR_CLIENT',
-    'TESTING', 'PENDING_DEPLOYMENT', 'COMPLETED', 'CLOSED',
+    'TESTING', 'PENDING_DEPLOYMENT', 'COMPLETED', 'CLOSED', 'CANCELLED',
 ];
 // Terminal statuses: no longer active support work.
-const SUPPORT_DONE_STATUSES = ['COMPLETED', 'CLOSED'];
+// CANCELLED is terminal but NOT resolved — work that never happened. Counting
+// it as done would flatter every delivery metric that reads this list.
+const SUPPORT_DONE_STATUSES = ['COMPLETED', 'CLOSED', 'CANCELLED'];
 // "Awaiting review/verification" gate for My Work.
 const SUPPORT_REVIEW_STATUSES = ['TESTING', 'PENDING_DEPLOYMENT'];
 

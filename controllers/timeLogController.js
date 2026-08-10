@@ -183,17 +183,15 @@ exports.correct = async (req, res) => {
     const client = await db.pool.connect();
     try {
         const original = await WorkTimeLog.getById(req.params.id);
-        if (!original) { client.release(); return res.status(404).json({ error: 'Time log not found' }); }
+        if (!original) { return res.status(404).json({ error: 'Time log not found' }); }
 
         if (!isManager(req.user)) {
-            client.release();
             return res.status(403).json({ error: 'Only a manager can issue a correction' });
         }
 
         const { minutes, note } = req.body;
         const corrected = Number(minutes);
         if (!Number.isInteger(corrected) || corrected <= 0) {
-            client.release();
             return res.status(400).json({ error: 'minutes must be a positive whole number' });
         }
 

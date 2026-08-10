@@ -122,7 +122,6 @@ exports.transitionTicket = async (req, res) => {
     try {
         const ticket = await SupportTicket.getById(id);
         if (!ticket) {
-            client.release();
             return res.status(404).json({ error: 'Ticket not found' });
         }
 
@@ -461,11 +460,9 @@ exports.convertToTicket = async (req, res) => {
     try {
         const support = await SupportTicket.getById(id);
         if (!support) {
-            client.release();
             return res.status(404).json({ error: 'Support ticket not found' });
         }
         if (support.linked_ticket_id) {
-            client.release();
             return res.status(409).json({
                 error: 'This support ticket is already linked to a dev ticket',
                 linked_ticket_id: support.linked_ticket_id,
