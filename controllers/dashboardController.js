@@ -78,12 +78,16 @@ async function customerHealth() {
     const doneList = SUPPORT_DONE_STATUSES.map((s) => `'${s}'`).join(',');
 
     const { rows: open } = await db.query(`
-        SELECT st.*, sp.name AS project_name, p.client_name,
+        SELECT st.*, COALESCE(p.name, sp.name) AS project_name,
+               COALESCE(stco.name, co.name, p.client_name) AS client_name,
                dev.full_name AS assigned_dev_name, pm.full_name AS assigned_pm_name,
                pause.paused_at AS open_paused_at
         FROM support_tickets st
         LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
-        LEFT JOIN projects p ON p.id = sp.project_id
+        -- st.project_id is the path new tickets use; sp.project_id is legacy.
+        LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+        LEFT JOIN companies co ON co.id = p.company_id
+        LEFT JOIN companies stco ON stco.id = st.company_id
         LEFT JOIN users dev ON st.assigned_dev_id = dev.id
         LEFT JOIN users pm ON st.assigned_pm_id = pm.id
         LEFT JOIN LATERAL (
@@ -148,12 +152,13 @@ async function customerHealth() {
 async function timeThisPeriod(from, to) {
     const { rows } = await db.query(`
         SELECT wtl.minutes, wtl.user_id, wtl.logged_for_date, wtl.status, wtl.is_billable,
-               p.client_name
+               COALESCE(co.name, p.client_name) AS client_name
         FROM work_time_logs wtl
         LEFT JOIN tickets t ON wtl.ticket_id = t.id
         LEFT JOIN support_tickets st ON wtl.support_ticket_id = st.id
         LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
-        LEFT JOIN projects p ON p.id = COALESCE(t.project_id, sp.project_id)
+        LEFT JOIN projects p ON p.id = COALESCE(t.project_id, st.project_id, sp.project_id)
+        LEFT JOIN companies co ON co.id = COALESCE(st.company_id, p.company_id)
         WHERE wtl.deleted_at IS NULL
           AND wtl.logged_for_date >= $1 AND wtl.logged_for_date <= $2
     `, [from, to]);

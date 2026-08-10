@@ -2,7 +2,11 @@ const db = require('../db');
 
 class SupportTicket {
     static async create({
+        // Legacy. New callers pass project_id; this stays accepted so existing
+        // rows and any un-migrated caller keep working until it is dropped.
         supporting_project_id,
+        project_id,
+        company_id,
         ticket_key,
         request_type,
         priority,
@@ -22,14 +26,16 @@ class SupportTicket {
     }) {
         const result = await db.query(
             `INSERT INTO support_tickets (
-                supporting_project_id, ticket_key, request_type, priority, risk_level, status,
+                supporting_project_id, project_id, company_id,
+                ticket_key, request_type, priority, risk_level, status,
                 title, description, steps_to_reproduce, attachments, start_date, sla_due_at,
                 first_response_due_at, resolution_due_at,
                 created_by_user_id, assigned_pm_id, assigned_dev_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             RETURNING *`,
             [
-                supporting_project_id, ticket_key, request_type, priority, risk_level, status || 'NEW',
+                supporting_project_id, project_id || null, company_id || null,
+                ticket_key, request_type, priority, risk_level, status || 'NEW',
                 title, description, steps_to_reproduce, JSON.stringify(attachments || []),
                 start_date || new Date(), sla_due_at,
                 first_response_due_at, resolution_due_at,
@@ -49,13 +55,17 @@ class SupportTicket {
 
     static async getById(id) {
         const result = await db.query(
-            `SELECT st.*, 
-                    sp.name as project_name,
+            `SELECT st.*,
+                    COALESCE(p.name, sp.name) as project_name,
+                    COALESCE(stco.name, co.name, p.client_name) as client_name,
                     c.full_name as created_by_name,
                     pm.full_name as assigned_pm_name,
                     dev.full_name as assigned_dev_name
              FROM support_tickets st
              LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
+             LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+             LEFT JOIN companies co ON co.id = p.company_id
+             LEFT JOIN companies stco ON stco.id = st.company_id
              LEFT JOIN users c ON st.created_by_user_id = c.id
              LEFT JOIN users pm ON st.assigned_pm_id = pm.id
              LEFT JOIN users dev ON st.assigned_dev_id = dev.id
@@ -77,7 +87,8 @@ class SupportTicket {
      */
     static async update(id, updates, client = db) {
         const allowed = [
-            'supporting_project_id', 'request_type', 'priority', 'risk_level', 'status',
+            'supporting_project_id', 'project_id', 'company_id',
+            'request_type', 'priority', 'risk_level', 'status',
             'title', 'description', 'steps_to_reproduce', 'attachments',
             'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at',
             'linked_ticket_id'

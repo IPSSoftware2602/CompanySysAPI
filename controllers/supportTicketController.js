@@ -58,9 +58,27 @@ exports.createTicket = async (req, res) => {
         // 2. Calculate SLA deadlines on the business calendar
         const { first_response_due_at, resolution_due_at } = await deadlinesFor(priority, start_date);
 
+        // 2b. Resolve project and company.
+        //
+        // project_id is the path forward; supporting_project_id is legacy and
+        // still accepted so existing clients keep working. company_id is copied
+        // onto the ticket rather than always joined through the project, so
+        // attribution survives a project being reassigned later.
+        const projectId = req.body.project_id
+            || (supporting_project_id
+                ? (await db.query('SELECT project_id FROM supporting_projects WHERE id = $1', [supporting_project_id])).rows[0]?.project_id
+                : null);
+
+        const companyId = req.body.company_id
+            || (projectId
+                ? (await db.query('SELECT company_id FROM projects WHERE id = $1', [projectId])).rows[0]?.company_id
+                : null);
+
         // 3. Create Ticket
         const ticket = await SupportTicket.create({
             supporting_project_id,
+            project_id: projectId,
+            company_id: companyId,
             ticket_key,
             request_type,
             priority,

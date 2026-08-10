@@ -140,15 +140,17 @@ exports.getEstimateVsActual = async (req, res) => {
 
         const { rows } = await db.query(
             `SELECT t.id, t.title, t.status,
-                    p.name AS project_name, p.client_name,
+                    p.name AS project_name,
+                    COALESCE(co.name, p.client_name) AS client_name,
                     COALESCE(SUM(wtl.minutes), 0)::int AS actual_minutes,
                     count(wtl.id)::int AS entries
              FROM tickets t
              LEFT JOIN projects p ON t.project_id = p.id
+             LEFT JOIN companies co ON co.id = p.company_id
              LEFT JOIN work_time_logs wtl
                     ON wtl.ticket_id = t.id AND wtl.deleted_at IS NULL ${dateFilter}
              WHERE t.deleted_at IS NULL
-             GROUP BY t.id, t.title, t.status, p.name, p.client_name
+             GROUP BY t.id, t.title, t.status, p.name, co.name, p.client_name
              HAVING count(wtl.id) > 0
              ORDER BY SUM(wtl.minutes) DESC`,
             params

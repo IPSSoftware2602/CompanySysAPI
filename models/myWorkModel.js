@@ -21,11 +21,15 @@ class MyWork {
                     t.blocked_reason,
                     t.project_id,
                     p.name                AS project_name,
-                    p.client_name,
+                    -- companies is authoritative; projects.client_name is the
+                    -- legacy free-text column, kept as fallback until it is
+                    -- dropped. Field name unchanged so callers need no edit.
+                    COALESCE(co.name, p.client_name) AS client_name,
                     t.updated_at
              FROM tickets t
              LEFT JOIN ticket_assignments ta ON ta.ticket_id = t.id
              LEFT JOIN projects p ON t.project_id = p.id
+             LEFT JOIN companies co ON p.company_id = co.id
              WHERE t.deleted_at IS NULL
                AND t.status <> 'DONE'
                -- owner_user_id is intentionally NOT referenced here. Every owner
@@ -53,12 +57,16 @@ class MyWork {
                     st.blocked_reason,
                     st.supporting_project_id AS project_id,
                     COALESCE(p.name, sp.name) AS project_name,
-                    p.client_name,
+                    -- Support tickets carry their own company_id (set at
+                    -- creation), so prefer it over the project's.
+                    COALESCE(stco.name, co.name, p.client_name) AS client_name,
                     st.updated_at,
                     st.ticket_key,
                     st.linked_ticket_id
              FROM support_tickets st
              LEFT JOIN projects p ON st.project_id = p.id
+             LEFT JOIN companies co ON p.company_id = co.id
+             LEFT JOIN companies stco ON st.company_id = stco.id
              LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
              WHERE st.deleted_at IS NULL
                AND st.status NOT IN ('COMPLETED', 'CLOSED')

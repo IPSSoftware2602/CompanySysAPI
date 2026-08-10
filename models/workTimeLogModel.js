@@ -12,7 +12,8 @@ const WORK_CONTEXT_SQL = `
     LEFT JOIN tickets t              ON wtl.ticket_id = t.id
     LEFT JOIN support_tickets st     ON wtl.support_ticket_id = st.id
     LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
-    LEFT JOIN projects p             ON p.id = COALESCE(t.project_id, sp.project_id)
+    LEFT JOIN projects p             ON p.id = COALESCE(t.project_id, st.project_id, sp.project_id)
+    LEFT JOIN companies co           ON co.id = COALESCE(st.company_id, p.company_id)
 `;
 
 const SELECT_FIELDS = `
@@ -22,7 +23,7 @@ const SELECT_FIELDS = `
     st.ticket_key,
     p.id                               AS project_id,
     p.name                             AS project_name,
-    p.client_name,
+    COALESCE(co.name, p.client_name)   AS client_name,
     u.full_name                        AS user_name
 `;
 
@@ -137,7 +138,7 @@ class WorkTimeLog {
 
         if (f.userId) { where.push(`wtl.user_id = $${idx++}`); values.push(f.userId); }
         if (f.projectId) { where.push(`p.id = $${idx++}`); values.push(f.projectId); }
-        if (f.clientName) { where.push(`p.client_name = $${idx++}`); values.push(f.clientName); }
+        if (f.clientName) { where.push(`COALESCE(co.name, p.client_name) = $${idx++}`); values.push(f.clientName); }
         if (f.from) { where.push(`wtl.logged_for_date >= $${idx++}`); values.push(f.from); }
         if (f.to) { where.push(`wtl.logged_for_date <= $${idx++}`); values.push(f.to); }
         if (f.status) { where.push(`wtl.status = $${idx++}`); values.push(f.status); }
@@ -176,7 +177,8 @@ class WorkTimeLog {
             `SELECT wtl.id, wtl.minutes, wtl.user_id, wtl.logged_for_date,
                     wtl.is_billable, wtl.status,
                     u.full_name AS user_name,
-                    p.id AS project_id, p.name AS project_name, p.client_name,
+                    p.id AS project_id, p.name AS project_name,
+                    COALESCE(co.name, p.client_name) AS client_name,
                     CASE WHEN wtl.ticket_id IS NOT NULL THEN 'KANBAN' ELSE 'SUPPORT' END AS work_type
              FROM work_time_logs wtl
              ${WORK_CONTEXT_SQL}

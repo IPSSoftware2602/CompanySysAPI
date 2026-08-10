@@ -31,7 +31,7 @@ exports.getUserCredits = async (req, res) => {
             SELECT t.*, 
                    ta.user_id as assigned_to_user_id,
                    p.name as project_name, 
-                   p.client_name, 
+                   COALESCE(co.name, p.client_name) as client_name, 
                    ce.id as evaluation_id, 
                    ce.final_score, 
                    ce.status as evaluation_status,
@@ -39,6 +39,7 @@ exports.getUserCredits = async (req, res) => {
             FROM tickets t
             JOIN ticket_assignments ta ON t.id = ta.ticket_id
             LEFT JOIN projects p ON t.project_id = p.id
+            LEFT JOIN companies co ON co.id = p.company_id
             LEFT JOIN credit_evaluations ce ON t.id = ce.ticket_id AND ce.assignee_user_id = $1 AND ce.deleted_at IS NULL
             WHERE ta.user_id = $1 AND t.deleted_at IS NULL ${dateFilter}
             ORDER BY p.name, t.start_date DESC
@@ -63,13 +64,15 @@ exports.getUserCredits = async (req, res) => {
         const supportQuery = `
             SELECT st.*, 
                    COALESCE(p.name, sp.name, 'Unknown Project') as project_name, 
-                   p.client_name, 
+                   COALESCE(stco.name, co.name, p.client_name) as client_name, 
                    ce.id as evaluation_id, 
                    ce.final_score, 
                    ce.status as evaluation_status,
                    ce.ticket_mark
             FROM support_tickets st
             LEFT JOIN projects p ON st.project_id = p.id
+            LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN companies stco ON stco.id = st.company_id
             LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
             LEFT JOIN credit_evaluations ce ON st.id = ce.support_ticket_id AND ce.deleted_at IS NULL
             WHERE st.assigned_dev_id = $1 AND st.deleted_at IS NULL ${supportDateFilter}
