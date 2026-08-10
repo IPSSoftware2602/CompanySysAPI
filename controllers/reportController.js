@@ -17,7 +17,7 @@ exports.getPerformanceReport = async (req, res) => {
 
         // Build Kanban query - get tickets with evaluations
         let kanbanParams = [];
-        let kanbanConditions = ["ce.status = 'SUBMITTED'", "ce.ticket_id IS NOT NULL"];
+        let kanbanConditions = ["ce.status = 'SUBMITTED'", "ce.ticket_id IS NOT NULL", "ce.deleted_at IS NULL", "t.deleted_at IS NULL"];
         let paramIdx = 1;
 
         if (startDate && endDate) {
@@ -67,7 +67,7 @@ exports.getPerformanceReport = async (req, res) => {
 
         // Build Support query with proper parameterization
         let supportParams = [];
-        let supportConditions = ["ce.status = 'SUBMITTED'", "ce.support_ticket_id IS NOT NULL"];
+        let supportConditions = ["ce.status = 'SUBMITTED'", "ce.support_ticket_id IS NOT NULL", "ce.deleted_at IS NULL", "st.deleted_at IS NULL"];
         paramIdx = 1;
 
         if (startDate && endDate) {

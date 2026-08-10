@@ -1,5 +1,7 @@
 const Ticket = require('../models/ticketModel');
 const db = require('../db');
+const AuditService = require('../services/auditService');
+const { AUDIT_ACTION, AUDIT_ENTITY } = require('../constants');
 
 exports.createTicket = async (req, res) => {
     try {
@@ -80,7 +82,7 @@ exports.transitionTicket = async (req, res) => {
 
         // Get the ticket's previous status for logging BEFORE updating
         const db = require('../db');
-        const previousTicket = await db.query('SELECT status FROM tickets WHERE id = $1', [id]);
+        const previousTicket = await db.query('SELECT status FROM tickets WHERE id = $1 AND deleted_at IS NULL', [id]);
         const fromStatus = previousTicket.rows[0]?.status;
         console.log(`Transition Debug: Updating ticket ${id} from ${fromStatus} to ${target}`);
 
@@ -93,6 +95,16 @@ exports.transitionTicket = async (req, res) => {
             'INSERT INTO ticket_transitions (ticket_id, from_status, to_status, performed_by_user_id, reason) VALUES ($1, $2, $3, $4, $5)',
             [id, fromStatus, target, req.user?.id, reason]
         );
+
+        // Audit the status override
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.STATUS_CHANGE,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+            before_data: { status: fromStatus },
+            after_data: { status: target },
+            reason,
+        });
         res.json(ticket);
     } catch (err) {
         console.error('Transition Error Details:', err);
@@ -186,7 +198,7 @@ exports.searchTickets = async (req, res) => {
         }
 
         if (whereConditions.length > 0) {
-            sql += ` WHERE ` + whereConditions.join(' OR ');
+            sql += ` WHERE t.deleted_at IS NULL AND (` + whereConditions.join(' OR ') + `)`;
         } else {
             return res.json([]); // No fields selected
         }
@@ -205,47 +217,92 @@ exports.searchTickets = async (req, res) => {
 exports.deleteTicket = async (req, res) => {
     try {
         const { id } = req.params;
-        console.log('Delete ticket request for ID:', id);
+        const { reason } = req.body || {};
 
-        // First check if ticket exists
-        const ticketCheck = await db.query('SELECT id FROM tickets WHERE id = $1', [id]);
-        if (ticketCheck.rows.length === 0) {
-            console.log('Ticket not found with ID:', id);
+        // Soft delete: mark deleted_at, keep the row and all related records intact.
+        const ticket = await Ticket.softDelete(id);
+        if (!ticket) {
             return res.status(404).json({ error: 'Ticket not found' });
         }
 
-        // Delete related records (wrap each in try-catch for tables that may not exist)
-        try { await db.query('DELETE FROM ticket_assignments WHERE ticket_id = $1', [id]); }
-        catch (e) { console.log('Skipping ticket_assignments:', e.message); }
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.DELETE,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+            before_data: { title: ticket.title, status: ticket.status, project_id: ticket.project_id },
+            reason,
+        });
 
-        try { await db.query('DELETE FROM comments WHERE ticket_id = $1', [id]); }
-        catch (e) { console.log('Skipping comments:', e.message); }
-
-        try { await db.query('DELETE FROM checklist_submissions WHERE ticket_id = $1', [id]); }
-        catch (e) { console.log('Skipping checklist_submissions:', e.message); }
-
-        // Delete checklists and their items
-        try {
-            const checklists = await db.query('SELECT id FROM checklists WHERE ticket_id = $1', [id]);
-            for (const checklist of checklists.rows) {
-                await db.query('DELETE FROM checklist_items WHERE checklist_id = $1', [checklist.id]);
-            }
-            await db.query('DELETE FROM checklists WHERE ticket_id = $1', [id]);
-        } catch (e) { console.log('Skipping checklists:', e.message); }
-
-        try { await db.query('DELETE FROM ticket_activity_logs WHERE ticket_id = $1', [id]); }
-        catch (e) { console.log('Skipping ticket_activity_logs:', e.message); }
-
-        try { await db.query('DELETE FROM credit_evaluations WHERE ticket_id = $1', [id]); }
-        catch (e) { console.log('Skipping credit_evaluations:', e.message); }
-
-        // Finally delete the ticket
-        const result = await db.query('DELETE FROM tickets WHERE id = $1 RETURNING *', [id]);
-        console.log('Ticket deleted:', result.rows[0]);
-
-        res.json({ message: 'Ticket deleted successfully', ticket: result.rows[0] });
+        res.json({ message: 'Ticket deleted successfully', ticket });
     } catch (err) {
         console.error('Delete ticket error:', err);
         res.status(500).json({ error: 'Failed to delete ticket', details: err.message });
+    }
+};
+
+exports.restoreTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body || {};
+
+        const ticket = await Ticket.restore(id);
+        if (!ticket) {
+            // Distinguish "no such ticket" from "it was never deleted".
+            const existing = await Ticket.getByIdIncludingDeleted(id);
+            if (!existing) return res.status(404).json({ error: 'Ticket not found' });
+            return res.status(409).json({ error: 'Ticket is not deleted', ticket: existing });
+        }
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.RESTORE,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+            after_data: { title: ticket.title, status: ticket.status },
+            reason,
+        });
+
+        res.json({ message: 'Ticket restored successfully', ticket });
+    } catch (err) {
+        console.error('Restore ticket error:', err);
+        res.status(500).json({ error: 'Failed to restore ticket', details: err.message });
+    }
+};
+
+exports.blockTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { reason } = req.body;
+        const ticket = await Ticket.setBlocked(id, { reason, userId: req.user?.id });
+        if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.BLOCK,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+            after_data: { blocked_reason: reason },
+            reason,
+        });
+        res.json(ticket);
+    } catch (err) {
+        console.error('Block ticket error:', err);
+        res.status(500).json({ error: 'Failed to block ticket' });
+    }
+};
+
+exports.unblockTicket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const ticket = await Ticket.clearBlocked(id);
+        if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+        await AuditService.record(req, {
+            action: AUDIT_ACTION.UNBLOCK,
+            entity_type: AUDIT_ENTITY.TICKET,
+            entity_id: id,
+        });
+        res.json(ticket);
+    } catch (err) {
+        console.error('Unblock ticket error:', err);
+        res.status(500).json({ error: 'Failed to unblock ticket' });
     }
 };

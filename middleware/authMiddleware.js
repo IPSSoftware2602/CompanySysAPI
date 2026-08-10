@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_change_me';
+const { JWT_SECRET } = require('../config');
 
 exports.authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -22,6 +22,19 @@ exports.authenticateToken = (req, res, next) => {
 exports.requireRole = (role) => {
     return (req, res, next) => {
         if (req.user.role !== role) {
+            return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+        }
+        next();
+    };
+};
+
+/**
+ * Allows any one of several roles. Use with constants.MANAGER_ROLES rather
+ * than inlining role lists at call sites.
+ */
+exports.requireAnyRole = (roles) => {
+    return (req, res, next) => {
+        if (!roles.includes(req.user?.role)) {
             return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
         }
         next();

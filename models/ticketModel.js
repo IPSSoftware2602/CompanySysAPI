@@ -1,13 +1,35 @@
 const db = require('../db');
 
 class Ticket {
-    static async create({ project_id, title, description, type, assigned_to_user_id, list_id, cover_color, cover_image_url, start_date, end_date }) {
-        const result = await db.query(
-            `INSERT INTO tickets (project_id, title, description, type, assigned_to_user_id, list_id, cover_color, cover_image_url, start_date, end_date) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-            [project_id, title, description, type, assigned_to_user_id, list_id, cover_color, cover_image_url, start_date, end_date]
-        );
-        return result.rows[0];
+    static async create({ project_id, title, description, type, assigned_to_user_id, owner_user_id, list_id, cover_color, cover_image_url, start_date, end_date }) {
+        // Accept either name during the transition; owner_user_id wins.
+        const owner = owner_user_id !== undefined ? owner_user_id : assigned_to_user_id;
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
+            const result = await client.query(
+                `INSERT INTO tickets (project_id, title, description, type, assigned_to_user_id, owner_user_id, list_id, cover_color, cover_image_url, start_date, end_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+                [project_id, title, description, type, owner, owner, list_id, cover_color, cover_image_url, start_date, end_date]
+            );
+            const ticket = result.rows[0];
+
+            // The owner is always also a collaborator, so ticket_assignments
+            // stays the complete answer to "who is on this ticket".
+            if (owner) {
+                await client.query(
+                    'INSERT INTO ticket_assignments (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                    [ticket.id, owner]
+                );
+            }
+            await client.query('COMMIT');
+            return ticket;
+        } catch (err) {
+            try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 
     static async updateStatus(id, status) {
@@ -19,7 +41,7 @@ class Ticket {
     }
 
     static async getById(id) {
-        const result = await db.query('SELECT * FROM tickets WHERE id = $1', [id]);
+        const result = await db.query('SELECT * FROM tickets WHERE id = $1 AND deleted_at IS NULL', [id]);
         const ticket = result.rows[0];
         if (!ticket) return null;
 
@@ -52,8 +74,8 @@ class Ticket {
                         WHERE ta.ticket_id = t.id),
                         '[]'::json
                    ) as members
-            FROM tickets t 
-            WHERE t.project_id = $1 
+            FROM tickets t
+            WHERE t.project_id = $1 AND t.deleted_at IS NULL
             ORDER BY t.list_id, t.position ASC, t.created_at DESC
         `, [projectId]);
         return result.rows;
@@ -143,6 +165,27 @@ class Ticket {
             fields.push(`position = $${index++}`);
             values.push(data.position);
         }
+        // The single accountable owner. Kept in sync with the legacy
+        // assigned_to_user_id column below until that column is retired.
+        if (data.owner_user_id !== undefined) {
+            fields.push(`owner_user_id = $${index++}`);
+            values.push(data.owner_user_id);
+            fields.push(`assigned_to_user_id = $${index++}`);
+            values.push(data.owner_user_id);
+        }
+        // Completion evidence. Recorded, never gated — see migrate_tier1_ownership.js.
+        if (data.completion_explanation !== undefined) {
+            fields.push(`completion_explanation = $${index++}`);
+            values.push(data.completion_explanation);
+        }
+        if (data.pull_request_url !== undefined) {
+            fields.push(`pull_request_url = $${index++}`);
+            values.push(data.pull_request_url);
+        }
+        if (data.test_evidence !== undefined) {
+            fields.push(`test_evidence = $${index++}`);
+            values.push(data.test_evidence);
+        }
 
         fields.push(`updated_at = NOW()`);
         values.push(id);
@@ -151,6 +194,66 @@ class Ticket {
             `UPDATE tickets SET ${fields.join(', ')} WHERE id = $${index} RETURNING *`,
             values
         );
+        const updated = result.rows[0];
+
+        // Same invariant as create(): a newly-appointed owner joins the
+        // collaborator list. The previous owner is left in place — handing over
+        // accountability rarely means the old owner stops being involved.
+        if (updated && data.owner_user_id) {
+            await db.query(
+                'INSERT INTO ticket_assignments (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                [updated.id, data.owner_user_id]
+            );
+        }
+        return updated;
+    }
+
+    static async setBlocked(id, { reason, userId }) {
+        const result = await db.query(
+            `UPDATE tickets
+             SET is_blocked = TRUE, blocked_reason = $1, blocked_at = NOW(),
+                 blocked_by_user_id = $2, updated_at = NOW()
+             WHERE id = $3 AND deleted_at IS NULL RETURNING *`,
+            [reason, userId, id]
+        );
+        return result.rows[0];
+    }
+
+    static async clearBlocked(id) {
+        const result = await db.query(
+            `UPDATE tickets
+             SET is_blocked = FALSE, blocked_reason = NULL, blocked_at = NULL,
+                 blocked_by_user_id = NULL, updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async softDelete(id) {
+        const result = await db.query(
+            `UPDATE tickets SET deleted_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    // Clears deleted_at. Matches only rows that are currently deleted, so
+    // restoring a live ticket is a no-op rather than a silent success.
+    static async restore(id) {
+        const result = await db.query(
+            `UPDATE tickets SET deleted_at = NULL, updated_at = NOW()
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    // Fetch regardless of soft-delete state — used to distinguish
+    // "not found" from "already restored".
+    static async getByIdIncludingDeleted(id) {
+        const result = await db.query('SELECT * FROM tickets WHERE id = $1', [id]);
         return result.rows[0];
     }
 }

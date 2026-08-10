@@ -3,6 +3,10 @@ const router = express.Router();
 const reportController = require('../controllers/reportController');
 const { authenticateToken } = require('../middleware/authMiddleware');
 
+const timeReportController = require('../controllers/timeReportController');
+
 router.get('/performance', authenticateToken, reportController.getPerformanceReport);
+router.get('/time', authenticateToken, timeReportController.getTimeReport);
+router.get('/time/estimate-vs-actual', authenticateToken, timeReportController.getEstimateVsActual);
 
 module.exports = router;

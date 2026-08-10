@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const creditController = require('../controllers/creditController');
 const { authenticateToken } = require('../middleware/authMiddleware');
+const validate = require('../middleware/validate');
+const v = require('../validators/creditValidators');
 
 const isAdmin = (req, res, next) => {
     console.log('Checking Admin Role for:', req.user.role);
@@ -22,9 +24,9 @@ router.get('/summary', authenticateToken, isAdmin, creditController.getAdminSumm
 router.get('/user/:userId', authenticateToken, creditController.getUserCredits);
 
 // Save/Update evaluation
-router.post('/evaluation', authenticateToken, creditController.saveEvaluation);
+router.post('/evaluation', authenticateToken, v.saveEvaluation, validate, creditController.saveEvaluation);
 
 // Get specific evaluation
-router.get('/evaluation/:id', authenticateToken, creditController.getEvaluation);
+router.get('/evaluation/:id', authenticateToken, v.idParam, validate, creditController.getEvaluation);
 
 module.exports = router;

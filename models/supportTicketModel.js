@@ -2,7 +2,11 @@ const db = require('../db');
 
 class SupportTicket {
     static async create({
+        // Legacy. New callers pass project_id; this stays accepted so existing
+        // rows and any un-migrated caller keep working until it is dropped.
         supporting_project_id,
+        project_id,
+        company_id,
         ticket_key,
         request_type,
         priority,
@@ -14,27 +18,61 @@ class SupportTicket {
         attachments,
         start_date,
         sla_due_at,
+        first_response_due_at,
+        resolution_due_at,
         created_by_user_id,
         assigned_pm_id,
         assigned_dev_id
-    }) {
-        const result = await db.query(
+    }, client = db) {
+        const result = await client.query(
             `INSERT INTO support_tickets (
-                supporting_project_id, ticket_key, request_type, priority, risk_level, status,
+                supporting_project_id, project_id, company_id,
+                ticket_key, request_type, priority, risk_level, status,
                 title, description, steps_to_reproduce, attachments, start_date, sla_due_at,
+                first_response_due_at, resolution_due_at,
                 created_by_user_id, assigned_pm_id, assigned_dev_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             RETURNING *`,
             [
-                supporting_project_id, ticket_key, request_type, priority, risk_level, status || 'NEW',
+                supporting_project_id, project_id || null, company_id || null,
+                ticket_key, request_type, priority, risk_level, status || 'NEW',
                 title, description, steps_to_reproduce, JSON.stringify(attachments || []),
                 start_date || new Date(), sla_due_at,
+                first_response_due_at, resolution_due_at,
                 created_by_user_id, assigned_pm_id, assigned_dev_id
             ]
         );
         return result.rows[0];
     }
 
+    /**
+     * Allocates the next ticket key for a month prefix, atomically.
+     *
+     * One statement: concurrent callers serialise on the counter row rather
+     * than racing a read-then-write. Replaces getLatestKey() + 1, which two
+     * simultaneous creates could both resolve to the same number.
+     *
+     * Pass the transaction's client so the allocation commits or rolls back
+     * with the ticket it belongs to — otherwise a failed insert burns a number.
+     *
+     * @param {string} prefix e.g. "SC-202608"
+     * @param {object} [client=db]
+     * @returns {Promise<string>} e.g. "SC-202608-0008"
+     */
+    static async nextTicketKey(prefix, client = db) {
+        const { rows } = await client.query(
+            `INSERT INTO ticket_sequences (prefix, last_value)
+             VALUES ($1, 1)
+             ON CONFLICT (prefix) DO UPDATE
+                 SET last_value = ticket_sequences.last_value + 1,
+                     updated_at = CURRENT_TIMESTAMP
+             RETURNING last_value`,
+            [prefix]
+        );
+        return `${prefix}-${String(rows[0].last_value).padStart(4, '0')}`;
+    }
+
+    /** @deprecated Racy. Use nextTicketKey(). Retained for the migration only. */
     static async getLatestKey(prefix) {
         const result = await db.query(
             `SELECT ticket_key FROM support_tickets WHERE ticket_key LIKE $1 ORDER BY ticket_key DESC LIMIT 1`,
@@ -45,27 +83,43 @@ class SupportTicket {
 
     static async getById(id) {
         const result = await db.query(
-            `SELECT st.*, 
-                    sp.name as project_name,
+            `SELECT st.*,
+                    COALESCE(p.name, sp.name) as project_name,
+                    COALESCE(stco.name, co.name, p.client_name) as client_name,
                     c.full_name as created_by_name,
                     pm.full_name as assigned_pm_name,
                     dev.full_name as assigned_dev_name
              FROM support_tickets st
              LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
+             LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+             LEFT JOIN companies co ON co.id = p.company_id
+             LEFT JOIN companies stco ON stco.id = st.company_id
              LEFT JOIN users c ON st.created_by_user_id = c.id
              LEFT JOIN users pm ON st.assigned_pm_id = pm.id
              LEFT JOIN users dev ON st.assigned_dev_id = dev.id
-             WHERE st.id = $1`,
+             WHERE st.id = $1 AND st.deleted_at IS NULL`,
             [id]
         );
         return result.rows[0];
     }
 
-    static async update(id, updates) {
+    /**
+     * @param {string} id
+     * @param {object} updates - only `allowed` keys are applied
+     * @param {object} [client=db] - pass a pg client to run inside a transaction
+     *
+     * NOTE: first_response_due_at / resolution_due_at / first_response_at /
+     * sla_paused_total_minutes are deliberately NOT in `allowed`. They are
+     * server-computed and written only by slaService, so a client cannot PATCH
+     * itself a more generous deadline.
+     */
+    static async update(id, updates, client = db) {
         const allowed = [
-            'supporting_project_id', 'request_type', 'priority', 'risk_level', 'status',
+            'supporting_project_id', 'project_id', 'company_id',
+            'request_type', 'priority', 'risk_level', 'status',
             'title', 'description', 'steps_to_reproduce', 'attachments',
-            'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at'
+            'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at',
+            'linked_ticket_id'
         ];
 
         const fields = [];
@@ -83,10 +137,75 @@ class SupportTicket {
 
         values.push(id);
         const queryText = `UPDATE support_tickets SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${idx} RETURNING *`;
-        console.log('Executing Query:', queryText);
-        console.log('Values:', values);
 
-        const result = await db.query(queryText, values);
+        const result = await client.query(queryText, values);
+        return result.rows[0];
+    }
+
+    static async setBlocked(id, { reason, userId }) {
+        const result = await db.query(
+            `UPDATE support_tickets
+             SET is_blocked = TRUE, blocked_reason = $1, blocked_at = NOW(),
+                 blocked_by_user_id = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3 AND deleted_at IS NULL RETURNING *`,
+            [reason, userId, id]
+        );
+        return result.rows[0];
+    }
+
+    static async clearBlocked(id) {
+        const result = await db.query(
+            `UPDATE support_tickets
+             SET is_blocked = FALSE, blocked_reason = NULL, blocked_at = NULL,
+                 blocked_by_user_id = NULL, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async softDelete(id) {
+        const result = await db.query(
+            `UPDATE support_tickets SET deleted_at = NOW(), updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async restore(id) {
+        const result = await db.query(
+            `UPDATE support_tickets SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 AND deleted_at IS NOT NULL RETURNING *`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    // Fetch regardless of soft-delete state, and report whether the linked dev
+    // ticket (if any) still exists — a restored support ticket can point at a
+    // ticket that was deleted in the meantime.
+    static async getByIdIncludingDeleted(id) {
+        const result = await db.query(
+            `SELECT st.*,
+                    CASE
+                        WHEN st.linked_ticket_id IS NULL THEN NULL
+                        ELSE (t.id IS NOT NULL AND t.deleted_at IS NULL)
+                    END AS linked_ticket_active
+             FROM support_tickets st
+             LEFT JOIN tickets t ON st.linked_ticket_id = t.id
+             WHERE st.id = $1`,
+            [id]
+        );
+        return result.rows[0];
+    }
+
+    static async setLinkedTicket(id, ticketId, client = db) {
+        const result = await client.query(
+            `UPDATE support_tickets SET linked_ticket_id = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2 AND deleted_at IS NULL RETURNING *`,
+            [ticketId, id]
+        );
         return result.rows[0];
     }
 }

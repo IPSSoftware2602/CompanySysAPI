@@ -7,7 +7,58 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+
+// Rate limiting buckets by client IP. Behind a reverse proxy (nginx, cPanel,
+// Cloudflare) every request arrives from the proxy's address, so without this
+// the whole team shares one bucket and a single attacker locks everyone out.
+//
+// Defaults to OFF because the opposite mistake is worse: trusting
+// X-Forwarded-For when there is no proxy lets any client forge its own IP and
+// bypass the limit entirely. Production is behind a proxy — set TRUST_PROXY to
+// the number of proxy hops (usually 1).
+if (process.env.TRUST_PROXY) {
+    app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+}
+
+/**
+ * CORS was previously wide open — any site the team visited could call this API
+ * with their browser's credentials. Locked to the app's own origins.
+ *
+ * Production is https://task.ips.com.my. Local Vite dev servers are included so
+ * developers are not forced to edit this file; add more via CORS_ORIGINS
+ * (comma-separated) rather than reopening it.
+ */
+const DEFAULT_ORIGINS = [
+    'https://task.ips.com.my',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:5173',
+];
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .concat(DEFAULT_ORIGINS);
+
+app.use(cors({
+    origin(origin, cb) {
+        // No Origin header: curl, server-to-server, same-origin navigation and
+        // the /uploads links. Not a browser cross-origin request, so allow it —
+        // CORS is not what protects those; authentication is.
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.includes(origin)) return cb(null, true);
+
+        // Refuse by withholding the header rather than throwing. Throwing
+        // surfaces as a 500 and buries real faults in the logs; without the
+        // header the browser blocks the response either way, and the preflight
+        // for our Authorization header fails, so no authenticated cross-origin
+        // call can complete.
+        console.warn(`[cors] blocked origin: ${origin}`);
+        cb(null, false);
+    },
+    credentials: true,
+}));
+
 app.use(express.json());
 
 // Routes
@@ -32,7 +83,26 @@ app.use('/api/supporting-projects', require('./routes/supportingProjectRoutes'))
 app.use('/api/credits', require('./routes/creditRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/reports', require('./routes/reportRoutes'));
-app.use('/uploads', express.static('uploads'));
+app.use('/api/my-work', require('./routes/myWorkRoutes'));
+app.use('/api/audit-logs', require('./routes/auditLogRoutes'));
+app.use('/api/time-logs', require('./routes/timeLogRoutes'));
+app.use('/api/dashboard', require('./routes/dashboardRoutes'));
+// Machine-facing contract for the AI workflow. Versioned and kept apart from
+// the routes above, which serve the React app and may change freely.
+app.use('/api/integration/v1', require('./routes/integrationRoutes'));
+// Human-facing views onto that integration — user JWT, not API keys.
+app.use('/api/integration-admin', require('./routes/integrationAdminRoutes'));
+// Attachments are served as downloads, never rendered inline. Combined with the
+// extension allowlist in uploadRoutes, this is the second layer stopping an
+// uploaded file from executing as script on our own origin — which, with the
+// JWT in the browser, would be session theft. nosniff stops the browser
+// second-guessing the declared type.
+app.use('/uploads', express.static('uploads', {
+    setHeaders: (res) => {
+        res.setHeader('Content-Disposition', 'attachment');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+}));
 
 app.get('/', (req, res) => {
   res.json({ message: 'IOS Backend System is running', timestamp: new Date() });
