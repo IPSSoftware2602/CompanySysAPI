@@ -227,6 +227,10 @@ exports.updateTicket = async (req, res) => {
     const { id } = req.params;
     const { title, description, priority, risk_level, steps_to_reproduce, expected_result, actual_result, user_impact, assigned_dev_id, start_date, actual_end_date } = req.body;
 
+    // Transactional so the assignment webhook is enqueued on the same client as
+    // the change it announces — the event cannot exist without the assignment,
+    // or the assignment without the event.
+    const client = await db.pool.connect();
     try {
         const ticket = await SupportTicket.getById(id);
         if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
@@ -244,9 +248,23 @@ exports.updateTicket = async (req, res) => {
             updateData.attachments = JSON.stringify(req.body.attachments);
         }
 
+        await client.query('BEGIN');
+
         const updatedTicket = Object.keys(updateData).length
-            ? await SupportTicket.update(id, updateData)
+            ? await SupportTicket.update(id, updateData, client)
             : ticket;
+
+        // Someone picking the ticket up is news the customer can use, so the
+        // workflow is told. No-ops for human-filed tickets.
+        const assignmentChanged = assigned_dev_id !== undefined
+            && assigned_dev_id !== ticket.assigned_dev_id;
+        if (assignmentChanged) {
+            await Webhook.enqueue({
+                event: Webhook.EVENTS.ASSIGNED,
+                ticket: updatedTicket,
+                extra: { assigned: Boolean(assigned_dev_id) },
+            }, client);
+        }
 
         // Recompute both deadlines when the priority or the clock's start moves.
         // Done after the update so it reads the ticket's new values.
@@ -256,14 +274,18 @@ exports.updateTicket = async (req, res) => {
             await SlaService.applyDeadlines(id, {
                 priority: priority || ticket.priority,
                 startAt: start_date || ticket.start_date || ticket.created_at,
-            });
-            return res.json(await SupportTicket.getById(id));
+            }, client);
         }
 
-        res.json(updatedTicket);
+        await client.query('COMMIT');
+
+        res.json(await SupportTicket.getById(id));
     } catch (err) {
+        try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
         console.error('Error in updateTicket:', err);
         res.status(500).json({ error: 'Failed to update ticket', details: err.message });
+    } finally {
+        client.release();
     }
 };
 
