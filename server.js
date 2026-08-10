@@ -90,6 +90,8 @@ app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 // Machine-facing contract for the AI workflow. Versioned and kept apart from
 // the routes above, which serve the React app and may change freely.
 app.use('/api/integration/v1', require('./routes/integrationRoutes'));
+// Human-facing views onto that integration — user JWT, not API keys.
+app.use('/api/integration-admin', require('./routes/integrationAdminRoutes'));
 // Attachments are served as downloads, never rendered inline. Combined with the
 // extension allowlist in uploadRoutes, this is the second layer stopping an
 // uploaded file from executing as script on our own origin — which, with the
