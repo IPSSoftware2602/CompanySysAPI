@@ -365,12 +365,10 @@ async function findBreaching({ thresholdPct = WARN_THRESHOLD_PCT, now = new Date
         `SELECT st.*,
                 sp.name  AS project_name,
                 dev.full_name AS assigned_dev_name,
-                pm.full_name  AS assigned_pm_name,
                 p.paused_at   AS open_paused_at
          FROM support_tickets st
          LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
          LEFT JOIN users dev ON st.assigned_dev_id = dev.id
-         LEFT JOIN users pm  ON st.assigned_pm_id = pm.id
          LEFT JOIN LATERAL (
              SELECT paused_at FROM sla_pauses
              WHERE support_ticket_id = st.id AND resumed_at IS NULL

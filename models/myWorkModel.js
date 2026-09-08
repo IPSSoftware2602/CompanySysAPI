@@ -70,7 +70,9 @@ class MyWork {
              LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
              WHERE st.deleted_at IS NULL
                AND st.status NOT IN ('COMPLETED', 'CLOSED')
-               AND (st.assigned_dev_id = $1 OR st.assigned_pm_id = $1)`,
+               -- Support tickets have one owner: the assignee. The PM field
+               -- was removed, so there is no second way to own one.
+               AND st.assigned_dev_id = $1`,
             [userId]
         );
 

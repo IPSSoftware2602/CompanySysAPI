@@ -1,4 +1,5 @@
 const db = require('../db');
+const { normaliseRecipient } = require('../services/groupNotifyService');
 
 class Project {
     /**
@@ -38,40 +39,68 @@ class Project {
         return retry.rows[0]?.id || null;
     }
 
-    static async create({ name, client_name, company_id, tech_lead_id, pm_id, status }) {
+    static async create({ name, client_name, company_id, tech_lead_id, pm_id, status, whatsapp_group_jid }) {
         const companyId = company_id || await Project.resolveCompany(client_name);
 
         const result = await db.query(
-            `INSERT INTO projects (name, client_name, company_id, tech_lead_id, pm_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+            `INSERT INTO projects (name, client_name, company_id, tech_lead_id, pm_id, status, whatsapp_group_jid)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
             // client_name is still written so a rollback to the previous release
             // keeps working. It stops being written when the column is dropped.
-            [name, client_name, companyId, tech_lead_id, pm_id, status || 'PENDING']
+            [name, client_name, companyId, tech_lead_id, pm_id, status || 'PENDING',
+                normaliseRecipient(whatsapp_group_jid) || null]
         );
         return result.rows[0];
     }
 
+    /**
+     * Company and tech lead names come along for the ride so the support
+     * ticket's project picker can search on all three, and so picking a project
+     * can show its tech lead without a second round trip. Purely additive —
+     * every existing consumer still sees the columns it already read.
+     */
     static async getAll() {
-        const result = await db.query('SELECT * FROM projects ORDER BY created_at DESC');
+        const result = await db.query(`
+            SELECT p.*,
+                   co.name AS company_name,
+                   tl.full_name AS tech_lead_name,
+                   pm.full_name AS pm_name
+            FROM projects p
+            LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN users tl ON tl.id = p.tech_lead_id
+            LEFT JOIN users pm ON pm.id = p.pm_id
+            ORDER BY p.created_at DESC
+        `);
         return result.rows;
     }
 
+    /**
+     * This is what GET /api/projects actually serves, so the tech lead, PM and
+     * company names are resolved here too — the support ticket form reads
+     * tech_lead_name off this response to show a project's lead.
+     */
     static async getWithStats() {
         const result = await db.query(`
-            SELECT p.*, 
-                   (SELECT json_object_agg(status, count) 
+            SELECT p.*,
+                   co.name AS company_name,
+                   tl.full_name AS tech_lead_name,
+                   pmu.full_name AS pm_name,
+                   (SELECT json_object_agg(status, count)
                     FROM (SELECT status, COUNT(*) as count
                           FROM tickets
                           WHERE project_id = p.id AND deleted_at IS NULL
                           GROUP BY status) t
                    ) as ticket_counts
             FROM projects p
+            LEFT JOIN companies co ON co.id = p.company_id
+            LEFT JOIN users tl ON tl.id = p.tech_lead_id
+            LEFT JOIN users pmu ON pmu.id = p.pm_id
             ORDER BY p.created_at DESC
         `);
         return result.rows;
     }
 
-    static async update(id, { name, client_name, company_id, tech_lead_id, pm_id, status }) {
+    static async update(id, { name, client_name, company_id, tech_lead_id, pm_id, status, whatsapp_group_jid }) {
         const fields = [];
         const values = [];
         let idx = 1;
@@ -86,6 +115,17 @@ class Project {
         if (tech_lead_id) { fields.push(`tech_lead_id = $${idx++}`); values.push(tech_lead_id); }
         if (pm_id) { fields.push(`pm_id = $${idx++}`); values.push(pm_id); }
         if (status) { fields.push(`status = $${idx++}`); values.push(status); }
+
+        // Tested against undefined, not truthiness, because unmapping a group
+        // means writing an empty value — every field above can only ever be
+        // set, never cleared, and this one has to be clearable.
+        if (whatsapp_group_jid !== undefined) {
+            // A pasted "120363…@g.us" and the bare digits are the same group.
+            // Stored one way so the IRIS receiver's lookup always matches.
+            const jid = normaliseRecipient(whatsapp_group_jid) || null;
+            fields.push(`whatsapp_group_jid = $${idx++}`);
+            values.push(jid);
+        }
 
         if (fields.length === 0) return null;
 

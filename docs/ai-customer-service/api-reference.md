@@ -83,6 +83,17 @@ Content-Type: application/json
 | `project_code` | | project name |
 | `external_ref` | | your id, echoed back on every response and webhook |
 | `first_responded_at` | | **Send this.** See below. |
+| `attachments` | | `[{ name, url }]`. The files are **downloaded and re-hosted** by CompanySys, so your link may expire afterwards. See below. |
+
+> **Attachments are copied, not linked.** CompanySys fetches each URL at
+> creation and serves the file from its own storage, because WhatsApp media
+> links expire and a ticket opened three weeks later would show a dead image.
+>
+> Constraints, all of which produce a `warnings` entry rather than a failure:
+> at most 10 attachments; 10MB each; `http`/`https` only; no redirects; the
+> content type must be one of pdf, png, jpg, gif, webp, xlsx, xls, docx, doc,
+> pptx, csv, txt, log, zip. Anything that cannot be stored keeps your original
+> URL and is marked `"unverified": true`.
 
 > **`first_responded_at` matters.** You already replied to the customer on
 > WhatsApp before this ticket existed. Without that timestamp, CompanySys starts
@@ -104,6 +115,7 @@ Content-Type: application/json
   "project": "iBeauty POS",
   "created_at": "2026-08-10T09:15:00.000Z",
   "updated_at": "2026-08-10T09:15:00.000Z",
+  "tech_lead": "Waikeat",
   "resolved_at": null,
   "closed_at": null,
   "cancellation_requested_at": null
@@ -162,7 +174,7 @@ Behaviour depends on whether anyone has invested work:
 
 | Ticket status | Result |
 |---|---|
-| `NEW`, `TRIAGING` | Cancelled immediately — `"cancelled": true` |
+| `NEW` | Cancelled immediately — `"cancelled": true` |
 | Anything later | **Request recorded** — `"cancelled": false`, flagged for a human |
 
 ```json
@@ -193,6 +205,37 @@ customer only once you get that event, not when you send this request.
 **Always internal.** Nothing sent here is ever shown to a customer, because
 CompanySys has no customer-facing surface. Use it to give the developer context
 you gathered in conversation.
+
+---
+
+## 6b. Project library
+
+### `GET /projects`
+
+The list of projects to match a customer's message against. Read scope.
+
+```json
+{
+  "projects": [
+    {
+      "project_code": "iBeauty POS",
+      "name": "iBeauty POS",
+      "status": "ACTIVE",
+      "company": "One Hair",
+      "company_code": "ONEHAIR",
+      "tech_lead": "Waikeat",
+      "aliases": ["iBeauty POS", "One Hair"]
+    }
+  ],
+  "count": 1,
+  "generated_at": "2026-08-27T11:38:54.154Z"
+}
+```
+
+`project_code` is the value `POST /tickets` resolves — send it back verbatim.
+`aliases` are the strings a customer is likely to use for the same project.
+
+`tech_lead` is display only. Assignment stays with CompanySys.
 
 ---
 
@@ -297,7 +340,7 @@ without a customer being forgotten.
 
 ## 9. Reference
 
-**Ticket statuses** `NEW`, `TRIAGING`, `DOING`, `WAITING_FOR_CLIENT`, `TESTING`,
+**Ticket statuses** `NEW`, `DOING`, `WAITING_FOR_CLIENT`, `TESTING`,
 `PENDING_DEPLOYMENT`, `COMPLETED`, `CLOSED`, `CANCELLED`
 
 `CANCELLED` is not `CLOSED` — it is work that never happened.

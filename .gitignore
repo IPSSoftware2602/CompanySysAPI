@@ -17,3 +17,11 @@ server.log
 # Uploads (runtime user content)
 uploads/*
 !uploads/.gitkeep
+
+# Database dumps and data exports — a full dump carries every user's password
+# hash and the XTECH token out of app_settings. Never in git.
+data/backups/
+data/*backup*.json
+*.dump
+*.sql
+!schema.sql

@@ -325,7 +325,7 @@ enums. Note `schema.sql` is **stale** — do not generate types from it.
 | `user_role` | `CEO`, `TECH_LEAD`, `PM`, `QA`, `DEV`, `FINANCE`, `ADMIN` |
 | `ticket_status` | `BACKLOG`, `TECH_DESIGN`, `READY_FOR_DEV`, `IN_PROGRESS`, `CODE_REVIEW`, `QA`, `READY_TO_DEPLOY`, `DONE` |
 | `ticket_type` | `FEATURE`, `BUG`, `CHANGE_REQUEST` |
-| `support_ticket_status` | `NEW`, `TRIAGING`, `DOING`, `WAITING_FOR_CLIENT`, `TESTING`, `PENDING_DEPLOYMENT`, `COMPLETED`, `CLOSED` |
+| `support_ticket_status` | `NEW`, `DOING`, `WAITING_FOR_CLIENT`, `TESTING`, `PENDING_DEPLOYMENT`, `COMPLETED`, `CLOSED`, `CANCELLED` |
 | `support_priority` | `P0`, `P1`, `P2`, `P3` |
 | `support_request_type` | `BUG`, `AMENDMENT`, `CHANGE_REQUEST`, `FEATURE`, `QUESTION`, `DATA_ISSUE` |
 | `credit_status` | `DRAFT`, `SUBMITTED`, `APPROVED`, `ADJUSTED`, `REJECTED` |

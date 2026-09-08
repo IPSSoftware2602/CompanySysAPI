@@ -14,6 +14,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const db = require('../db');
 const Webhook = require('../services/webhookService');
+const GroupNotify = require('../services/groupNotifyService');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const AS_JSON = process.argv.includes('--json');
@@ -21,9 +22,14 @@ const AS_JSON = process.argv.includes('--json');
 async function main() {
     const url = process.env.WEBHOOK_URL;
     const secret = process.env.WEBHOOK_SECRET;
+    // Resolved config, NOT raw env: XTECH is configured in the app's Settings
+    // page and lives in app_settings. Reading process.env here meant the job
+    // refused to run on a correctly-configured system, so announcements
+    // queued forever.
+    const xtechUrl = (await GroupNotify.config()).url;
 
-    if (!url) {
-        console.log('[webhook] WEBHOOK_URL not set — events are queuing but cannot be delivered.');
+    if (!url && !xtechUrl) {
+        console.log('[webhook] Neither WEBHOOK_URL nor XTECH_API_URL is set — events are queuing but cannot be delivered.');
         const { rows: [c] } = await db.query(
             `SELECT count(*) FILTER (WHERE status IN ('PENDING','FAILED'))::int waiting FROM webhook_deliveries`
         );
@@ -33,7 +39,7 @@ async function main() {
         return { skipped: true };
     }
 
-    if (!secret) {
+    if (url && !secret) {
         // Not fatal, but the receiver cannot tell a real delivery from a forged
         // one, and this endpoint changes what a customer is told.
         console.warn('[webhook] WEBHOOK_SECRET not set — deliveries will be UNSIGNED.');
@@ -41,13 +47,22 @@ async function main() {
 
     if (DRY_RUN) {
         const { rows } = await db.query(
-            `SELECT id, event, attempts, payload->>'ticket_key' AS ticket_key
+            `SELECT id, event, channel, attempts, payload,
+                    payload->>'ticket_key' AS ticket_key
              FROM webhook_deliveries
              WHERE status IN ('PENDING','FAILED') AND next_attempt_at <= now()
              ORDER BY next_attempt_at LIMIT 25`
         );
         console.log(`[webhook] ${rows.length} delivery/deliveries due (dry run):`);
-        for (const r of rows) console.log(`  -> ${r.event} ${r.ticket_key} (attempt ${r.attempts + 1})`);
+        for (const r of rows) {
+            console.log(`  -> [${r.channel}] ${r.event} ${r.ticket_key} (attempt ${r.attempts + 1})`);
+            // Print the actual group message, so the wording can be reviewed
+            // before a single one is sent for real.
+            if (r.channel === 'WHATSAPP') {
+                const text = GroupNotify.composeMessage(r.payload);
+                console.log(text.split('\n').map((l) => `       | ${l}`).join('\n'));
+            }
+        }
         return { dryRun: true, due: rows.length };
     }
 

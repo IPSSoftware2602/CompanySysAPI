@@ -21,8 +21,10 @@ class SupportTicket {
         first_response_due_at,
         resolution_due_at,
         created_by_user_id,
-        assigned_pm_id,
-        assigned_dev_id
+        assigned_dev_id,
+        // NULL means "follow the project's current tech lead" — see getById.
+        tech_lead_id,
+        reviewer_user_id
     }, client = db) {
         const result = await client.query(
             `INSERT INTO support_tickets (
@@ -30,8 +32,9 @@ class SupportTicket {
                 ticket_key, request_type, priority, risk_level, status,
                 title, description, steps_to_reproduce, attachments, start_date, sla_due_at,
                 first_response_due_at, resolution_due_at,
-                created_by_user_id, assigned_pm_id, assigned_dev_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                created_by_user_id, assigned_dev_id,
+                tech_lead_id, reviewer_user_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             RETURNING *`,
             [
                 supporting_project_id, project_id || null, company_id || null,
@@ -39,7 +42,8 @@ class SupportTicket {
                 title, description, steps_to_reproduce, JSON.stringify(attachments || []),
                 start_date || new Date(), sla_due_at,
                 first_response_due_at, resolution_due_at,
-                created_by_user_id, assigned_pm_id, assigned_dev_id
+                created_by_user_id, assigned_dev_id,
+                tech_lead_id || null, reviewer_user_id || null
             ]
         );
         return result.rows[0];
@@ -87,16 +91,31 @@ class SupportTicket {
                     COALESCE(p.name, sp.name) as project_name,
                     COALESCE(stco.name, co.name, p.client_name) as client_name,
                     c.full_name as created_by_name,
-                    pm.full_name as assigned_pm_name,
-                    dev.full_name as assigned_dev_name
+                    dev.full_name as assigned_dev_name,
+                    -- Same person, second name: the board query calls this
+                    -- assigned_to_name and the card reads that. Without the
+                    -- alias, replacing a board row with a getById result drops
+                    -- the assignee off the card after every save.
+                    dev.full_name as assigned_to_name,
+                    -- The tech lead is DISPLAY only: who owns the project, not
+                    -- who is doing the work. A NULL override deliberately falls
+                    -- through to the project so re-assigning a project's lead
+                    -- updates every ticket that never overrode it.
+                    COALESCE(st.tech_lead_id, p.tech_lead_id) as effective_tech_lead_id,
+                    COALESCE(tlo.full_name, tlp.full_name) as tech_lead_name,
+                    rev.full_name as reviewer_name,
+                    revby.full_name as reviewed_by_name
              FROM support_tickets st
              LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
              LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
              LEFT JOIN companies co ON co.id = p.company_id
              LEFT JOIN companies stco ON stco.id = st.company_id
              LEFT JOIN users c ON st.created_by_user_id = c.id
-             LEFT JOIN users pm ON st.assigned_pm_id = pm.id
              LEFT JOIN users dev ON st.assigned_dev_id = dev.id
+             LEFT JOIN users tlo ON st.tech_lead_id = tlo.id
+             LEFT JOIN users tlp ON p.tech_lead_id = tlp.id
+             LEFT JOIN users rev ON st.reviewer_user_id = rev.id
+             LEFT JOIN users revby ON st.reviewed_by_user_id = revby.id
              WHERE st.id = $1 AND st.deleted_at IS NULL`,
             [id]
         );
@@ -118,8 +137,9 @@ class SupportTicket {
             'supporting_project_id', 'project_id', 'company_id',
             'request_type', 'priority', 'risk_level', 'status',
             'title', 'description', 'steps_to_reproduce', 'attachments',
-            'assigned_pm_id', 'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at',
-            'linked_ticket_id'
+            'assigned_dev_id', 'start_date', 'actual_end_date', 'sla_due_at', 'closed_at',
+            'linked_ticket_id', 'tech_lead_id', 'reviewer_user_id',
+            'reviewed_by_user_id', 'reviewed_at'
         ];
 
         const fields = [];

@@ -20,7 +20,9 @@
     "apikey:revoke": "node scripts/apiKey.js revoke",
     "db:migrate:webhooks": "node migrate_webhooks.js",
     "webhook:send": "node jobs/webhookSender.js",
-    "webhook:send:dry": "node jobs/webhookSender.js --dry-run"
+    "webhook:send:dry": "node jobs/webhookSender.js --dry-run",
+    "xtech:test": "node scripts/xtechTest.js",
+    "xtech:show": "node scripts/xtechTest.js --show"
   },
   "keywords": [],
   "author": "",

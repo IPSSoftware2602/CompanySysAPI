@@ -210,7 +210,7 @@ Rejected: `status`, `priority`, `assigned_dev_id`, any SLA field, `resolution`.
 **The workflow proposes; CompanySys decides.**
 
 ### `POST /tickets/:ticket_key/cancel`
-- `NEW` / `TRIAGING` → cancels immediately
+- `NEW` → cancels immediately
 - anything later → records `cancellation_requested_at` and flags for a human
 
 A customer saying "never mind" must not erase two days of a developer's work.

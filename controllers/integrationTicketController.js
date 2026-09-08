@@ -4,6 +4,7 @@ const SlaService = require('../services/slaService');
 const AuditService = require('../services/auditService');
 const Idempotency = require('../services/idempotencyService');
 const Webhook = require('../services/webhookService');
+const AttachmentIngest = require('../services/attachmentIngestService');
 const { AUDIT_ACTION, AUDIT_ENTITY, SUPPORT_PRIORITIES, SUPPORT_REQUEST_TYPES } = require('../constants');
 
 /**
@@ -24,6 +25,9 @@ function present(t) {
         title: t.title,
         company: t.client_name || null,
         project: t.project_name || null,
+        // The project's current tech lead, or this ticket's override. Display
+        // only — assignment stays ours.
+        tech_lead: t.tech_lead_name || null,
         created_at: t.created_at,
         updated_at: t.updated_at,
         resolved_at: t.actual_end_date || null,
@@ -33,7 +37,7 @@ function present(t) {
 }
 
 /** Statuses where cancelling costs nobody any work. */
-const CANCELLABLE_DIRECTLY = ['NEW', 'TRIAGING'];
+const CANCELLABLE_DIRECTLY = ['NEW'];
 /** Already finished — cancelling is meaningless. */
 const TERMINAL = ['COMPLETED', 'CLOSED', 'CANCELLED'];
 
@@ -115,6 +119,13 @@ exports.submit = async (req, res) => {
         return res.status(422).json({ error: 'This Idempotency-Key was already used for a different endpoint' });
     }
 
+    // Fetched BEFORE the transaction opens: downloading half a dozen files
+    // could take seconds, and holding a database transaction open across a
+    // network fetch to a third party is how a connection pool runs dry.
+    const ingested = await AttachmentIngest.ingest(attachments, {
+        baseUrl: `${req.protocol}://${req.get('host')}`,
+    });
+
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
@@ -142,7 +153,7 @@ exports.submit = async (req, res) => {
             title: String(title).trim(),
             description,
             steps_to_reproduce,
-            attachments,
+            attachments: ingested.attachments,
             start_date: now,
             sla_due_at: deadlines.resolution_due_at,
             first_response_due_at: deadlines.first_response_due_at,
@@ -166,7 +177,48 @@ exports.submit = async (req, res) => {
                 first_responded_at || null]
         );
 
+        // Queued before COMMIT so the internal group can never be told about a
+        // ticket that failed to save. Read back first, because source and
+        // external_ref are set by the UPDATE just above and enqueue needs them.
+        const { rows: [enriched] } = await client.query(
+            `SELECT st.*,
+                    COALESCE(p.name, sp.name)                   AS project_name,
+                    COALESCE(stco.name, co.name, p.client_name) AS client_name,
+                    COALESCE(tlo.full_name, tlp.full_name)      AS tech_lead_name
+             FROM support_tickets st
+             LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
+             LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+             LEFT JOIN companies co ON co.id = p.company_id
+             LEFT JOIN companies stco ON stco.id = st.company_id
+             LEFT JOIN users tlo ON tlo.id = st.tech_lead_id
+             LEFT JOIN users tlp ON tlp.id = p.tech_lead_id
+             WHERE st.id = $1`,
+            [ticket.id]
+        );
+
+        await Webhook.enqueue({
+            event: Webhook.EVENTS.CREATED,
+            ticket: enriched,
+            // The internal group, not back to the workflow: it filed this
+            // ticket and already knows it exists.
+            channel: Webhook.CHANNELS.WHATSAPP,
+            extra: {
+                title: enriched.title,
+                request_type: enriched.request_type,
+                project: enriched.project_name || null,
+                company: enriched.client_name || null,
+                tech_lead: enriched.tech_lead_name || null,
+                assigned_dev: null,
+                reported_by: reported_by_name || null,
+                app_url: `${process.env.APP_URL || 'https://task.ips.com.my'}/#support`,
+            },
+        }, client);
+
         await client.query('COMMIT');
+
+        // Same as the UI path: announce immediately, do not make the workflow
+        // wait on it.
+        Webhook.flushSoon();
 
         const fresh = await SupportTicket.getById(ticket.id);
         const body = present(fresh);
@@ -192,6 +244,9 @@ exports.submit = async (req, res) => {
                 : `Unknown company_code "${company_code}" — ticket is unattributed and will reach no invoice`);
         }
         if (project_code && !project) warnings.push(`Unknown project_code "${project_code}"`);
+        // Says plainly which files did not make it, rather than letting someone
+        // discover a dead link weeks later.
+        warnings.push(...ingested.warnings);
         if (!company && !project?.company_id) {
             warnings.push('Ticket has no company — time logged against it cannot be billed');
         }
@@ -276,7 +331,7 @@ exports.update = async (req, res) => {
 /**
  * POST /api/integration/v1/tickets/:ticket_key/cancel
  *
- * Cancels outright only while nobody has invested work. Past triage it becomes
+ * Cancels outright only while nobody has invested work. Once picked up it becomes
  * a request a human confirms — a customer saying "never mind" must not erase
  * two days of a developer's time.
  */

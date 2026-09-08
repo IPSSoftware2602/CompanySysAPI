@@ -6,6 +6,7 @@ const {
     TICKET_DONE_STATUSES,
     SUPPORT_DONE_STATUSES,
     TICKET_REVIEW_STATUSES,
+    SUPPORT_URGENT_PRIORITIES,
 } = require('../constants');
 
 /**
@@ -80,7 +81,7 @@ async function customerHealth() {
     const { rows: open } = await db.query(`
         SELECT st.*, COALESCE(p.name, sp.name) AS project_name,
                COALESCE(stco.name, co.name, p.client_name) AS client_name,
-               dev.full_name AS assigned_dev_name, pm.full_name AS assigned_pm_name,
+               dev.full_name AS assigned_dev_name,
                pause.paused_at AS open_paused_at
         FROM support_tickets st
         LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
@@ -89,7 +90,6 @@ async function customerHealth() {
         LEFT JOIN companies co ON co.id = p.company_id
         LEFT JOIN companies stco ON stco.id = st.company_id
         LEFT JOIN users dev ON st.assigned_dev_id = dev.id
-        LEFT JOIN users pm ON st.assigned_pm_id = pm.id
         LEFT JOIN LATERAL (
             SELECT paused_at FROM sla_pauses
             WHERE support_ticket_id = st.id AND resumed_at IS NULL
@@ -120,10 +120,10 @@ async function customerHealth() {
                 priority: t.priority,
                 status: t.status,
                 client_name: t.client_name,
-                owner: t.assigned_dev_name || t.assigned_pm_name || null,
+                owner: t.assigned_dev_name || null,
                 // Unassigned breaches are invisible in everyone's My Work — the
                 // dashboard is the only place they surface.
-                unassigned: !t.assigned_dev_id && !t.assigned_pm_id,
+                unassigned: !t.assigned_dev_id,
                 first_response_pct: sla.firstResponse.pct,
                 resolution_pct: sla.resolution.pct,
                 breached: hasBreached,
@@ -144,8 +144,132 @@ async function customerHealth() {
         at_risk: atRisk,
         paused_waiting_customer: paused,
         reopened_ever: Number(reopened.n),
-        unassigned_open: open.filter((t) => !t.assigned_dev_id && !t.assigned_pm_id).length,
+        unassigned_open: open.filter((t) => !t.assigned_dev_id).length,
         needs_attention: needsAttention,
+    };
+}
+
+/**
+ * Everything that needs someone's attention right now, for everybody.
+ *
+ * The only section a non-manager sees. Deliberately company-wide rather than
+ * "yours": a P0 nobody has picked up is exactly the ticket that is in nobody's
+ * My Work, and hiding it from the people who could take it is how it sits
+ * overnight.
+ *
+ * Urgent means either of two things, because they catch different failures:
+ *   - priority P0/P1        — urgent by its nature, even if freshly raised
+ *   - SLA breached or close — urgent because time ran out, whatever the priority
+ *
+ * Kanban tickets have no priority column, so their urgency can only be
+ * behavioural: past their end date, or blocked.
+ */
+async function urgentWork() {
+    const supportDone = SUPPORT_DONE_STATUSES.map((s) => `'${s}'`).join(',');
+    const urgentPriorities = SUPPORT_URGENT_PRIORITIES.map((p) => `'${p}'`).join(',');
+    const doneList = TICKET_DONE_STATUSES.map((s) => `'${s}'`).join(',');
+
+    const { rows: open } = await db.query(`
+        SELECT st.*, COALESCE(p.name, sp.name) AS project_name,
+               COALESCE(stco.name, co.name, p.client_name) AS client_name,
+               dev.full_name AS assigned_dev_name,
+               COALESCE(tlo.full_name, tlp.full_name) AS tech_lead_name,
+               pause.paused_at AS open_paused_at
+        FROM support_tickets st
+        LEFT JOIN supporting_projects sp ON st.supporting_project_id = sp.id
+        LEFT JOIN projects p ON p.id = COALESCE(st.project_id, sp.project_id)
+        LEFT JOIN companies co ON co.id = p.company_id
+        LEFT JOIN companies stco ON stco.id = st.company_id
+        LEFT JOIN users dev ON st.assigned_dev_id = dev.id
+        LEFT JOIN users tlo ON st.tech_lead_id = tlo.id
+        LEFT JOIN users tlp ON p.tech_lead_id = tlp.id
+        LEFT JOIN LATERAL (
+            SELECT paused_at FROM sla_pauses
+            WHERE support_ticket_id = st.id AND resumed_at IS NULL
+            ORDER BY paused_at DESC LIMIT 1
+        ) pause ON TRUE
+        WHERE st.deleted_at IS NULL
+          AND st.status NOT IN (${supportDone})
+          AND (st.priority IN (${urgentPriorities})
+               OR st.resolution_due_at IS NOT NULL
+               OR st.sla_due_at IS NOT NULL)
+    `);
+
+    const { holidays, targets } = await SlaService.loadCalendar();
+    const now = new Date();
+    const support = [];
+
+    for (const t of open) {
+        // No priority means no SLA target, and slaStatus would throw — one bad
+        // row must not blank the section everybody depends on.
+        const sla = SlaService.slaStatus(t.priority ? t : { ...t, priority: 'P3' },
+            { holidays, targets, now });
+        const breached = SlaService.isBreached(sla);
+        const highPriority = SUPPORT_URGENT_PRIORITIES.includes(t.priority);
+
+        // A ticket paused waiting on the client is not somebody's fault to fix
+        // right now, so it only makes the list on priority.
+        if (!highPriority && !breached && !sla.needsAttention) continue;
+
+        support.push({
+            id: t.id,
+            ticket_key: t.ticket_key,
+            title: t.title,
+            priority: t.priority,
+            status: t.status,
+            project_name: t.project_name,
+            client_name: t.client_name,
+            tech_lead_name: t.tech_lead_name || null,
+            owner: t.assigned_dev_name || null,
+            unassigned: !t.assigned_dev_id,
+            breached,
+            at_risk: !breached && Boolean(sla.needsAttention),
+            paused: Boolean(sla.resolution.isPaused),
+            resolution_pct: sla.resolution.pct,
+            resolution_due_at: t.resolution_due_at || t.sla_due_at || null,
+            reason: breached ? 'SLA breached'
+                : sla.needsAttention ? 'SLA at risk'
+                    : `Priority ${t.priority}`,
+
+        });
+    }
+
+    // Breached first, then closest to breaching, then by priority — the order
+    // someone should actually work down the list in.
+    support.sort((a, b) =>
+        (b.breached - a.breached)
+        || (b.resolution_pct - a.resolution_pct)
+        || String(a.priority || '').localeCompare(String(b.priority || '')));
+
+    const { rows: kanban } = await db.query(`
+        SELECT t.id, t.title, t.status, t.end_date, t.is_blocked, t.blocked_reason,
+               t.project_id, p.name AS project_name, u.full_name AS owner_name
+        FROM tickets t
+        LEFT JOIN projects p ON t.project_id = p.id
+        LEFT JOIN users u ON t.owner_user_id = u.id
+        WHERE t.deleted_at IS NULL
+          AND t.status NOT IN (${doneList})
+          AND ((t.end_date IS NOT NULL AND t.end_date < now()) OR t.is_blocked)
+        ORDER BY t.is_blocked DESC, t.end_date NULLS LAST
+    `);
+
+    return {
+        support,
+        kanban: kanban.map((k) => ({
+            id: k.id,
+            title: k.title,
+            status: k.status,
+            // Carried so the dashboard row can open the board it lives on.
+            project_id: k.project_id,
+            project_name: k.project_name,
+            owner: k.owner_name || null,
+            end_date: k.end_date,
+            blocked: k.is_blocked,
+            reason: k.is_blocked ? (k.blocked_reason || 'Blocked') : 'Past its end date',
+        })),
+        total: support.length + kanban.length,
+        breached: support.filter((t) => t.breached).length,
+        unassigned: support.filter((t) => t.unassigned).length,
     };
 }
 
@@ -216,9 +340,11 @@ async function teamLoad() {
 
 exports.getDashboard = async (req, res) => {
     try {
-        if (!isManager(req.user)) {
-            return res.status(403).json({ error: 'Only managers can view the dashboard' });
-        }
+        // The urgent section is for everybody — a developer who cannot see the
+        // breaching P0 cannot pick it up. The company-wide delivery, time and
+        // team numbers stay with managers, and a non-manager simply gets those
+        // keys as null rather than a 403 for the whole page.
+        const manager = isManager(req.user);
 
         // Defaults to the current calendar month, in LOCAL time.
         // toISOString() would convert to UTC first, so midnight on the 1st in
@@ -231,20 +357,28 @@ exports.getDashboard = async (req, res) => {
         const from = req.query.from || ymd(new Date(now.getFullYear(), now.getMonth(), 1));
         const to = req.query.to || ymd(now);
 
-        const [delivery, customers, time, team] = await Promise.all([
-            section('delivery', deliveryHealth),
-            section('customers', customerHealth),
-            section('time', () => timeThisPeriod(from, to)),
-            section('team', teamLoad),
+        const [urgent, delivery, customers, time, team] = await Promise.all([
+            section('urgent', urgentWork),
+            manager ? section('delivery', deliveryHealth) : null,
+            manager ? section('customers', customerHealth) : null,
+            manager ? section('time', () => timeThisPeriod(from, to)) : null,
+            manager ? section('team', teamLoad) : null,
         ]);
 
         res.json({
             generated_at: new Date().toISOString(),
+            is_manager: manager,
+            urgent,
             delivery,
             customers,
             time,
             team,
-            unavailable: Object.entries({ delivery, customers, time, team })
+            // Only report a section as unavailable if it was actually asked
+            // for — otherwise every developer's page would claim four broken
+            // migrations.
+            unavailable: Object.entries(
+                manager ? { urgent, delivery, customers, time, team } : { urgent }
+            )
                 .filter(([, v]) => v === null)
                 .map(([k]) => k),
         });

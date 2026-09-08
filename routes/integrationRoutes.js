@@ -3,6 +3,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
 
 const ctl = require('../controllers/integrationTicketController');
+const projectCtl = require('../controllers/integrationProjectController');
 const { authenticateApiKey, requireScope } = require('../middleware/apiKeyAuth');
 
 /**
@@ -35,6 +36,10 @@ router.use(authenticateApiKey);
 
 // Reads are separately scoped, so a write-only key cannot enumerate tickets.
 // Listed before /tickets/:ticket_key so neither shadows the other.
+// The project library the workflow matches customers against. Read scope: it
+// is reference data, and a write-only key has no business enumerating clients.
+router.get('/projects', requireScope('tickets:read'), projectCtl.list);
+
 router.get('/tickets', requireScope('tickets:read'), ctl.list);
 router.get('/tickets/:ticket_key', requireScope('tickets:read'), ctl.get);
 

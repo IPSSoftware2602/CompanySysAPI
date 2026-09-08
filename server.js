@@ -59,7 +59,14 @@ app.use(cors({
     credentials: true,
 }));
 
-app.use(express.json());
+// The IRIS receiver verifies an HMAC over the exact bytes it was sent, so the
+// raw body has to survive parsing. Scoped to that one path — holding a Buffer
+// for every upload in the app would be a memory cost for nothing.
+app.use(express.json({
+    verify: (req, res, buf) => {
+        if (req.originalUrl.startsWith('/api/integration/iris')) req.rawBody = buf;
+    },
+}));
 
 // Routes
 const ticketRoutes = require('./routes/ticketRoutes');
@@ -90,8 +97,17 @@ app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 // Machine-facing contract for the AI workflow. Versioned and kept apart from
 // the routes above, which serve the React app and may change freely.
 app.use('/api/integration/v1', require('./routes/integrationRoutes'));
+
+// IRIS (the AI that answers customers on WhatsApp) posts escalations here.
+// Signature-authenticated, not API-key authenticated — see the controller.
+app.use('/api/integration/iris', require('./routes/irisRoutes'));
 // Human-facing views onto that integration — user JWT, not API keys.
 app.use('/api/integration-admin', require('./routes/integrationAdminRoutes'));
+
+// Managing the credentials those integrations authenticate with. JWT-gated, so
+// an API key can never mint another API key.
+app.use('/api/api-clients', require('./routes/apiKeyRoutes'));
+app.use('/api/settings', require('./routes/settingsRoutes'));
 // Attachments are served as downloads, never rendered inline. Combined with the
 // extension allowlist in uploadRoutes, this is the second layer stopping an
 // uploaded file from executing as script on our own origin — which, with the

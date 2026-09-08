@@ -48,6 +48,11 @@ exports.createProject = async (req, res) => {
 
         res.status(201).json(project);
     } catch (err) {
+        if (err.code === '23505' && err.constraint === 'projects_whatsapp_group_jid_key') {
+            return res.status(409).json({
+                error: 'That WhatsApp group is already linked to another project',
+            });
+        }
         console.error(err);
         res.status(500).json({ error: 'Failed to create project' });
     }
@@ -71,6 +76,13 @@ exports.updateProject = async (req, res) => {
         }
         res.json(project);
     } catch (err) {
+        // The WhatsApp group is unique across projects: two projects claiming
+        // one group would make "which project is this ticket for" unanswerable.
+        if (err.code === '23505' && err.constraint === 'projects_whatsapp_group_jid_key') {
+            return res.status(409).json({
+                error: 'That WhatsApp group is already linked to another project',
+            });
+        }
         console.error(err);
         res.status(500).json({ error: 'Failed to update project' });
     }
